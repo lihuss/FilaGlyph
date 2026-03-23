@@ -1,0 +1,12 @@
+venv/
+outputs/
+logs/
+tmp/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.wav
+*.mp4
+.DS_Store

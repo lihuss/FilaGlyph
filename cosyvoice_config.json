@@ -1,0 +1,8 @@
+{
+  "model_dir": "CosyVoice/pretrained_models/CosyVoice-300M-SFT",
+  "speaker_ids": {
+    "male": "中文男",
+    "female": "中文女"
+  },
+  "default_speaker_id": "中文男"
+}
