@@ -12,6 +12,28 @@ def truncate_output(text: str, limit: int = 12000) -> str:
     return text[:limit] + "\n... [truncated]"
 
 
+def extract_error_output(text: str) -> str:
+    """Extract the error-dense portion from mixed stdout/stderr output.
+
+    On failure, many tools print progress logs before the actual exception stack.
+    This helper keeps the complete error chain while dropping noisy normal logs.
+    """
+    if not text:
+        return ""
+
+    markers = [
+        "Traceback (most recent call last):",
+        "+--------------------- Traceback",
+        "RuntimeError:",
+        "ValueError:",
+        "TypeError:",
+    ]
+    index = min((text.find(marker) for marker in markers if marker in text), default=-1)
+    if index >= 0:
+        return text[index:]
+    return text
+
+
 def terminate_process(process: subprocess.Popen) -> None:
     if process.poll() is not None:
         return

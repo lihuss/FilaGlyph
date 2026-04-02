@@ -10,30 +10,37 @@ from moviepy import AudioFileClip, CompositeAudioClip, VideoFileClip, afx
 
 from .config import PROJECT_ROOT, AUDIO_EXTENSIONS
 
+try:
+    import imageio_ffmpeg
+except Exception:  # pragma: no cover
+    imageio_ffmpeg = None
+
+
+def _resolve_ffmpeg_executable() -> str:
+    if imageio_ffmpeg is not None:
+        try:
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            pass
+    return shutil.which("ffmpeg") or "ffmpeg"
+
+
+FFMPEG_EXE = _resolve_ffmpeg_executable()
+
 
 def probe_media_duration(media_path: Path) -> float:
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(media_path),
-    ]
-    completed = subprocess.run(
-        command,
-        cwd=PROJECT_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=True,
-    )
-    raw = (completed.stdout or "").strip()
-    return max(0.0, float(raw))
+    from .config import AUDIO_EXTENSIONS
+    is_audio = media_path.suffix.lower() in AUDIO_EXTENSIONS
+    
+    if is_audio:
+        clip = AudioFileClip(str(media_path))
+    else:
+        clip = VideoFileClip(str(media_path))
+        
+    try:
+        return max(0.0, float(clip.duration or 0.0))
+    finally:
+        clip.close()
 
 
 def escape_concat_path(path: Path) -> str:
@@ -46,7 +53,7 @@ def merge_segments_with_ffmpeg(segment_paths: list[Path], tmp_dir: Path, merged_
     concat_file.write_text(concat_content, encoding="utf-8")
 
     command = [
-        "ffmpeg",
+        FFMPEG_EXE,
         "-y",
         "-f",
         "concat",
@@ -56,6 +63,32 @@ def merge_segments_with_ffmpeg(segment_paths: list[Path], tmp_dir: Path, merged_
         str(concat_file),
         "-c",
         "copy",
+        str(merged_output),
+    ]
+    subprocess.run(command, check=True, cwd=PROJECT_ROOT)
+    concat_file.unlink(missing_ok=True)
+
+
+def merge_audio_segments_with_ffmpeg(audio_paths: list[Path], tmp_dir: Path, merged_output: Path) -> None:
+    if not audio_paths:
+        raise ValueError("No audio segment paths to merge")
+
+    concat_file = tmp_dir / "concat_audio_list.txt"
+    concat_content = "\n".join([f"file '{escape_concat_path(path)}'" for path in audio_paths]) + "\n"
+    concat_file.write_text(concat_content, encoding="utf-8")
+
+    command = [
+        FFMPEG_EXE,
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_file),
+        "-vn",
+        "-c:a",
+        "pcm_s16le",
         str(merged_output),
     ]
     subprocess.run(command, check=True, cwd=PROJECT_ROOT)
@@ -96,7 +129,7 @@ def retime_video_to_target_duration(
     parent_dir = video_path.parent
     retimed_path = parent_dir / f"{video_path.stem}.retimed.mp4"
     command = [
-        "ffmpeg",
+        FFMPEG_EXE,
         "-y",
         "-i",
         str(video_path),

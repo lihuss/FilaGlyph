@@ -1,21 +1,8 @@
 ﻿# FilaGlyph
 
-FilaGlyph is the Manim teaching-video pipeline project.
+FilaGlyph 是一个基于 Manim 的教学视频制作流水线项目。上传题目图片，获得3Blue1Brown风格的讲解视频。
 
-## Scope
-- Render multiple Manim scenes
-- Generate one-pass narration audio (optional)
-- Align scene timeline to narration duration
-- Final muxing to MP4
-
-## Entry
-- `make_manim_video.py`
-
-## Scene Worker Scripts
-- `src/make_manim_scene.py`
-- `src/make_manim_dub.py`
-
-## Install
+## 安装
 
 ```powershell
 pip install "setuptools<81.0.0"
@@ -23,11 +10,55 @@ pip install openai-whisper==20231117 --no-build-isolation
 pip install -r requirements.txt
 ```
 
-## Quick Start
+## CosyVoice TTS
+- 仅支持 CosyVoice。
+- `--tts-backend local`：在 GPU/CPU 上运行本地 CosyVoice2-0.5B。
+- 声音克隆直接接受 `wav` 格式，常见压缩格式（如 `m4a`）会在推理前自动转码为临时 wav 文件。
+
+## 图形界面
+
+启动应用程序。
+
 ```powershell
-venv\Scripts\python.exe make_manim_video.py --tts-script-file tmp\narration.txt --scene-files tmp\scene1.py,tmp\scene2.py --scene-names Scene1,Scene2 --output outputs\lesson.mp4 --no-bgm
+venv\Scripts\python.exe app_agent_desktop.py
 ```
 
-## Notes
-- This subproject is intentionally separated from text-only video generation.
-- CosyVoice is resolved from `FilaGlyph/CosyVoice` first, then `../CosyVoice`.
+在应用侧边栏点击 `设置`，填写四个角色的 API Key（`solver` / `architect` / `director` / `coder`）。前三个需要有识图能力的模型，如Gemini。
+
+在应用侧边栏点击 `音频`，在音色素材栏添加你的音频，可以选择音频文件或直接录制你的声音。建议输入对应的语音原文，这能大幅提高复刻准确度。
+
+在应用侧边栏点击 `工作台`，上传题目图片，选择音色，点击 `启动`。等待合成。
+
+在右侧输出栏等待合成完毕后，点击播放视频，或打开文件夹获取视频文件。
+
+## 栗子
+
+1. 
+
+题目图片：
+
+![平抛运动选择题](examples/ping_pao.png)
+
+桌面应用程序：
+
+<video controls src="examples/gui_show.mp4" title="应用程序使用"></video>
+
+output:
+
+<video controls src="examples/pingpao_lesson.mp4" title="讲解视频"></video>
+
+这个例子用的音频是没有设置语音原文的，所以调用跨语言复刻模式。虽然配音生动，但稳定性不够完美，不适用于严肃教学场景。
+
+2. 
+
+题目图片：
+
+![磁场轨迹大题](examples/magne.jpg)
+
+桌面应用程序:
+
+![合成过程](examples/gui2.png)
+
+output:
+
+![讲解视频](examples/magne_lesson.mp4)

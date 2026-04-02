@@ -7,6 +7,13 @@ import sys
 import threading
 import traceback
 from pathlib import Path
+import io
+
+# Force UTF-8 for Windows console output to avoid GBK encoding errors
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
 SYS_SRC_PATH = SCRIPT_ROOT / "src"
@@ -33,6 +40,7 @@ from makevideo.scenes import (
 )
 from makevideo.subprocess import truncate_output
 from makevideo.tts import run_narration_child_script
+from makevideo.tts import read_narration_lines, run_segmented_narration_child_scripts
 
 from core.utils.error_logging import log_runtime_error
 
@@ -68,7 +76,6 @@ def build_parser() -> ArgumentParser:
         action="store_true",
         help="If set, scene rendering runs in parallel by scene count; TTS remains serial.",
     )
-    parser.add_argument("--disable-tts", action="store_true")
     parser.add_argument(
         "--tts-script-file",
         type=str,
@@ -79,26 +86,40 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--voice",
         type=str,
-        choices=["female", "male"],
-        default="male",
-        help="Voice preset key (default: male).",
+        default="none",
+        help="Voice clone audio path or 'none' to disable narration.",
     )
-    parser.add_argument("--tts-speaker-id", type=str, default="", help="Override CosyVoice speaker id directly.")
+    parser.add_argument("--tts-prompt-text", type=str, default="", help="Optional transcript of custom voice audio.")
     parser.add_argument("--tts-model-dir", type=str, default="", help="Override CosyVoice model dir or repo id.")
+    parser.add_argument("--tts-backend", type=str, choices=["local", "modelscope_api"], default="local")
     parser.add_argument("--tts-device", type=str, choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--tts-api-base-url", type=str, default="", help="CosyVoice HTTP API base URL, for example https://... or http://host:50000")
+    parser.add_argument("--tts-api-key", type=str, default="", help="Optional bearer token for CosyVoice HTTP API.")
+    parser.add_argument("--tts-api-timeout", type=float, default=180.0)
     parser.add_argument("--tts-gain", type=float, default=1.35)
     parser.add_argument("--tts-speed", type=float, default=1.1, help="Base speed for TTS generation (default: 1.1)")
     parser.add_argument("--musics-dir", type=str, default="materials/musics", help="Folder with background music.")
     parser.add_argument("--no-bgm", action="store_true", help="Disable background music completely.")
     parser.add_argument("--bgm-path", type=str, default="")
     parser.add_argument("--bgm-volume", type=float, default=0.12)
+    parser.add_argument(
+        "--runtime-log-file",
+        type=str,
+        default="",
+        help="Optional absolute or project-relative runtime log file path.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     global CURRENT_TASK_LOG_FILE
-    runtime_log_file = create_task_log_file()
+    if args.runtime_log_file:
+        runtime_log_file = resolve_project_path(args.runtime_log_file)
+        runtime_log_file.parent.mkdir(parents=True, exist_ok=True)
+        runtime_log_file.touch(exist_ok=True)
+    else:
+        runtime_log_file = create_task_log_file(PROJECT_ROOT / "outputs" / "agent_runs")
     CURRENT_TASK_LOG_FILE = runtime_log_file
     log_status(f"Runtime log initialized: {runtime_log_file}", runtime_log_file)
     log_status(f"Command line: {' '.join(sys.argv)}", runtime_log_file)
@@ -128,9 +149,12 @@ def main() -> None:
     narration_source: Path | None = None
     combined_narration_audio: Path | None = None
     merged_target_duration: float | None = None
+    narration_segment_durations: list[float] = []
+    segmented_tts_used = False
 
     try:
-        if not args.disable_tts:
+        tts_disabled = args.voice.strip().lower() in ("none", "disable")
+        if not tts_disabled:
             if not args.tts_script_file:
                 raise ValueError("TTS is enabled but --tts-script-file is missing")
 
@@ -138,31 +162,61 @@ def main() -> None:
             if not narration_source.exists() or not narration_source.is_file():
                 raise FileNotFoundError(f"TTS script file not found: {narration_source}")
 
-            log_status("Synthesizing one full narration (TTS is always serial)", runtime_log_file)
+            narration_lines = read_narration_lines(narration_source)
             combined_narration_audio = run_dir / "narration_full.wav"
-
             stop_event = threading.Event()
             process_registry: list[subprocess.Popen] = []
             registry_lock = threading.Lock()
-            _, narration_duration, output = run_narration_child_script(
-                narration_file=narration_source,
-                output_audio=combined_narration_audio,
-                tts_run_dir=run_dir / "tts_tmp_full",
-                args=args,
-                dub_runner_script=dub_runner_script,
-                runtime_log_file=runtime_log_file,
-                stop_event=stop_event,
-                process_registry=process_registry,
-                registry_lock=registry_lock,
-            )
-            if output.strip():
-                log_status(truncate_output(output, limit=500), runtime_log_file)
 
-            merged_target_duration = narration_duration + SCENE_BUFFER_SECONDS
-            log_status(
-                f"Single narration duration={narration_duration:.3f}s, merged target={merged_target_duration:.3f}s",
-                runtime_log_file,
-            )
+            if len(narration_lines) == len(scene_jobs):
+                segmented_tts_used = True
+                log_status(
+                    f"Synthesizing segmented narration: lines={len(narration_lines)}, scenes={len(scene_jobs)}",
+                    runtime_log_file,
+                )
+                _, narration_segment_durations, _, narration_duration, output = run_segmented_narration_child_scripts(
+                    narration_lines=narration_lines,
+                    output_audio=combined_narration_audio,
+                    tts_run_dir=run_dir / "tts_tmp_segmented",
+                    args=args,
+                    dub_runner_script=dub_runner_script,
+                    runtime_log_file=runtime_log_file,
+                    stop_event=stop_event,
+                    process_registry=process_registry,
+                    registry_lock=registry_lock,
+                )
+                if output.strip():
+                    log_status(truncate_output(output, limit=500), runtime_log_file)
+                log_status(
+                    "Segment durations(s): " + ", ".join([f"{d:.3f}" for d in narration_segment_durations]),
+                    runtime_log_file,
+                )
+            else:
+                log_status(
+                    (
+                        "Fallback to full narration synthesis: "
+                        f"narration-lines={len(narration_lines)} does not match scene-count={len(scene_jobs)}"
+                    ),
+                    runtime_log_file,
+                )
+                _, narration_duration, output = run_narration_child_script(
+                    narration_file=narration_source,
+                    output_audio=combined_narration_audio,
+                    tts_run_dir=run_dir / "tts_tmp_full",
+                    args=args,
+                    dub_runner_script=dub_runner_script,
+                    runtime_log_file=runtime_log_file,
+                    stop_event=stop_event,
+                    process_registry=process_registry,
+                    registry_lock=registry_lock,
+                )
+                if output.strip():
+                    log_status(truncate_output(output, limit=500), runtime_log_file)
+                merged_target_duration = narration_duration + SCENE_BUFFER_SECONDS
+                log_status(
+                    f"Single narration duration={narration_duration:.3f}s, merged target={merged_target_duration:.3f}s",
+                    runtime_log_file,
+                )
 
         workers = len(scene_jobs) if args.enable_multithread else 1
         log_status(f"Rendering scenes via child scripts (workers={workers})", runtime_log_file)
@@ -180,10 +234,35 @@ def main() -> None:
             runtime_log_file=runtime_log_file,
         )
 
+        if not tts_disabled:
+            if segmented_tts_used:
+                if len(narration_segment_durations) != len(segment_paths):
+                    raise RuntimeError(
+                        "Segmented TTS duration count mismatch: "
+                        f"durations={len(narration_segment_durations)} scene-segments={len(segment_paths)}"
+                    )
+                per_scene_buffer = SCENE_BUFFER_SECONDS / max(1, len(segment_paths))
+                for idx, (segment_path, narration_duration) in enumerate(
+                    zip(segment_paths, narration_segment_durations), start=1
+                ):
+                    target_duration = narration_duration + per_scene_buffer
+                    aligned_duration = retime_video_to_target_duration(
+                        video_path=segment_path,
+                        target_duration=target_duration,
+                        fps=args.fps,
+                    )
+                    log_status(
+                        (
+                            f"Aligned scene#{idx}: narration={narration_duration:.3f}s "
+                            f"target={target_duration:.3f}s video={aligned_duration:.3f}s"
+                        ),
+                        runtime_log_file,
+                    )
+
         merged_video = run_dir / "merged_video.mp4"
         merge_segments_with_ffmpeg(segment_paths, run_dir, merged_video)
 
-        if not args.disable_tts:
+        if not tts_disabled and not segmented_tts_used:
             if merged_target_duration is None:
                 raise RuntimeError("Internal error: merged target duration missing")
             final_merged_duration = retime_video_to_target_duration(
@@ -196,7 +275,7 @@ def main() -> None:
                 runtime_log_file,
             )
 
-        if not args.disable_tts:
+        if not tts_disabled:
             if combined_narration_audio is None:
                 raise RuntimeError("Internal error: combined narration audio missing")
 

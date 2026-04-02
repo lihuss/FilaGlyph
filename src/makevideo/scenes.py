@@ -9,7 +9,7 @@ import threading
 
 from .config import PROJECT_ROOT
 from .logging import log_status
-from .subprocess import run_subprocess_with_failfast, terminate_all_processes, truncate_output
+from .subprocess import extract_error_output, run_subprocess_with_failfast, terminate_all_processes, truncate_output
 
 
 def parse_csv_list(raw: str) -> list[str]:
@@ -90,7 +90,7 @@ def run_scene_child_script(
         output = run_subprocess_with_failfast(command, PROJECT_ROOT, stop_event, process_registry, registry_lock)
     except subprocess.CalledProcessError as exc:
         command_text = " ".join(command)
-        output_text = truncate_output(exc.output or "")
+        output_text = extract_error_output(exc.output or "")
         raise RuntimeError(
             f"Scene child script failed: index={scene_index}, name={scene_name}\n"
             f"Command: {command_text}\n"
@@ -102,7 +102,7 @@ def run_scene_child_script(
     if not segment_path.exists() or not segment_path.is_file():
         raise FileNotFoundError(
             f"Scene child script reported success but segment not found: {segment_path}\n"
-            f"Scene output:\n{truncate_output(output)}"
+            f"Scene output:\n{output}"
         )
 
     return segment_path, output

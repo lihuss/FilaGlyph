@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+
+def get_theme_palette(is_dark: bool) -> dict[str, str]:
+    dark_palette = {
+        "dark_one": "#0f172a",
+        "dark_two": "#111827",
+        "dark_three": "#1f2937",
+        "dark_four": "#111827",
+        "bg_one": "#111827",
+        "bg_two": "#334155",
+        "bg_three": "#475569",
+        "icon_color": "#cbd5e1",
+        "icon_hover": "#e2e8f0",
+        "icon_pressed": "#ffffff",
+        "icon_active": "#ffffff",
+        "context_color": "#2563eb",
+        "context_hover": "#1d4ed8",
+        "context_pressed": "#1e40af",
+        "text_title": "#f8fafc",
+        "text_foreground": "#e2e8f0",
+        "text_description": "#94a3b8",
+        "text_active": "#ffffff",
+        "white": "#ffffff",
+        "pink": "#ec4899",
+        "green": "#22c55e",
+        "red": "#ef4444",
+        "yellow": "#eab308",
+    }
+    light_palette = {
+        "dark_one": "#f5f7fb",
+        "dark_two": "#ffffff",
+        "dark_three": "#ffffff",
+        "dark_four": "#f8fafc",
+        "bg_one": "#ffffff",
+        "bg_two": "#e2e8f0",
+        "bg_three": "#cbd5e1",
+        "icon_color": "#475569",
+        "icon_hover": "#1d4ed8",
+        "icon_pressed": "#1e3a8a",
+        "icon_active": "#ffffff",
+        "context_color": "#2563eb",
+        "context_hover": "#1d4ed8",
+        "context_pressed": "#1e40af",
+        "text_title": "#0f172a",
+        "text_foreground": "#1e293b",
+        "text_description": "#64748b",
+        "text_active": "#0f172a",
+        "white": "#ffffff",
+        "pink": "#db2777",
+        "green": "#16a34a",
+        "red": "#dc2626",
+        "yellow": "#ca8a04",
+    }
+    return dark_palette if is_dark else light_palette
+

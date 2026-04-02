@@ -6,18 +6,19 @@ import threading
 
 from pathlib import Path
 
-from .config import LOG_DIR
+from .config import AGENT_RUNS_DIR
 
 _LOG_WRITE_LOCK = threading.Lock()
 
 
-def create_task_log_file() -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+def create_task_log_file(log_dir: Path | None = None) -> Path:
+    target_dir = (log_dir or AGENT_RUNS_DIR).resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate = LOG_DIR / f"log_{stamp}.log"
+    candidate = target_dir / f"log_{stamp}.log"
     suffix = 1
     while candidate.exists():
-        candidate = LOG_DIR / f"log_{stamp}_{suffix:02d}.log"
+        candidate = target_dir / f"log_{stamp}_{suffix:02d}.log"
         suffix += 1
     candidate.touch()
     return candidate

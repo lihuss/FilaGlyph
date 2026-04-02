@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from core.utils.error_logging import log_runtime_error
+from makevideo.subprocess import extract_error_output
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -49,10 +50,40 @@ def _find_rendered_mp4(media_dir: Path, file_stem: str) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
-def _truncate_output(text: str, limit: int = 12000) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n... [truncated]"
+def _build_render_env() -> dict:
+    env = os.environ.copy()
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg_dir = str(Path(ffmpeg_exe).resolve().parent)
+        path_value = env.get("PATH", "")
+        if ffmpeg_dir not in path_value.split(os.pathsep):
+            env["PATH"] = ffmpeg_dir + os.pathsep + path_value
+    except Exception:
+        pass
+    return env
+
+
+def _resolve_ffmpeg_exe() -> str:
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        return str(Path(imageio_ffmpeg.get_ffmpeg_exe()).resolve())
+    except Exception:
+        which = shutil.which("ffmpeg")
+        return which or "ffmpeg"
+
+
+def _write_runtime_manim_cfg(scene_tmp_dir: Path) -> Path:
+    cfg_path = scene_tmp_dir / "manim_runtime.cfg"
+    ffmpeg_exe = _resolve_ffmpeg_exe().replace("\\", "/")
+    cfg_path.write_text(
+        "[ffmpeg]\n"
+        f"ffmpeg_executable = {ffmpeg_exe}\n",
+        encoding="utf-8",
+    )
+    return cfg_path
 
 
 def build_parser() -> ArgumentParser:
@@ -88,10 +119,13 @@ def main() -> None:
             shutil.copy2(scene_file, local_scene_file)
 
         output_stem = f"segment_{args.scene_index:03d}_{args.scene_name}"
+        runtime_cfg = _write_runtime_manim_cfg(scene_tmp_dir)
         command = [
             "-m",
             "manim",
             "render",
+            "--config_file",
+            str(runtime_cfg),
             str(local_scene_file),
             args.scene_name,
             "--format",
@@ -112,6 +146,7 @@ def main() -> None:
         completed = subprocess.run(
             [sys.executable, *command],
             cwd=PROJECT_ROOT,
+            env=_build_render_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -120,7 +155,7 @@ def main() -> None:
         )
 
         if completed.returncode != 0:
-            output_text = _truncate_output(completed.stdout or "")
+            output_text = extract_error_output(completed.stdout or "")
             raise RuntimeError(
                 f"Scene render failed: index={args.scene_index}, name={args.scene_name}\n"
                 f"Command: {' '.join(command)}\n"

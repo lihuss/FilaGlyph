@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from pathlib import Path
 import sys
 import traceback
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-LOG_DIR = PROJECT_ROOT / "logs"
-RUNTIME_LOG_FILE = LOG_DIR / "runtime_errors.log"
+
+
+def _default_runtime_log_file() -> Path:
+    run_dir_value = os.getenv("FILAGLYPH_RUN_DIR", "").strip()
+    if run_dir_value:
+        run_dir = Path(run_dir_value)
+        return run_dir / "runtime_errors.log"
+    return PROJECT_ROOT / "outputs" / "agent_runs" / "runtime_errors.log"
 
 
 def log_runtime_error(script_name: str, exc: BaseException | None = None, context: str = "") -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_log_file = _default_runtime_log_file()
+    runtime_log_file.parent.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if exc is None:
@@ -37,7 +45,7 @@ def log_runtime_error(script_name: str, exc: BaseException | None = None, contex
         "",
     ])
 
-    with RUNTIME_LOG_FILE.open("a", encoding="utf-8") as handle:
+    with runtime_log_file.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines))
 
-    return RUNTIME_LOG_FILE
+    return runtime_log_file

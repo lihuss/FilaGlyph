@@ -8,5 +8,12 @@ __pycache__/
 *.pyd
 *.log
 *.wav
-*.mp4
 .DS_Store
+materials/voices/*.wav
+materials/voices/*.wave
+materials/voices/*.mp3
+materials/voices/*.m4a
+materials/voices/*.aac
+materials/voices/*.flac
+materials/voices/*.ogg
+materials/voices/*.opus
