@@ -18,4 +18,4 @@ materials/voices/*.flac
 materials/voices/*.ogg
 materials/voices/*.opus
 agents_credentials.json
-tmp_uploads
+tmp_uploads/
