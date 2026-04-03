@@ -82,11 +82,11 @@ venv\Scripts\python.exe app_agent_desktop.py
 
 桌面应用程序：
 
-<video src="examples/gui_show.mp4" width="100%" controls></video>
+<video src="https://raw.githubusercontent.com/lihuss/FilaGlyph/main/examples/gui_show.mp4" width="100%" controls></video>
 
 output:
 
-<video src="examples/pingpao_lesson.mp4" width="100%" controls></video>
+<video src="https://raw.githubusercontent.com/lihuss/FilaGlyph/main/examples/pingpao_lesson.mp4" width="100%" controls></video>
 
 这个例子用的音频是没有设置语音原文的，所以调用跨语言复刻模式。虽然配音生动，但稳定性不够完美，不适用于严肃教学场景。
 
@@ -102,4 +102,4 @@ output:
 
 output:
 
-<video src="examples/magne_lesson.mp4" width="100%" controls></video>
+<video src="https://raw.githubusercontent.com/lihuss/FilaGlyph/main/examples/magne_lesson.mp4" width="100%" controls></video>
