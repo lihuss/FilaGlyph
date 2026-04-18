@@ -89,22 +89,57 @@ class DropZone(QtWidgets.QFrame):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setObjectName("dropZone")
-        self.setCursor(QtCore.Qt.PointingHandCursor)
-        self._label = QtWidgets.QLabel("粘贴 / 拖拽 / 点击选择文件")
-        self._label.setAlignment(QtCore.Qt.AlignCenter)
+        self.setCursor(QtCore.Qt.ArrowCursor)
+
+        self._prompt_input = QtWidgets.QTextEdit(self)
+        self._prompt_input.setObjectName("workbenchPromptInput")
+        self._prompt_input.setPlaceholderText("发给Solver的补充说明（可选）")
+        self._prompt_input.setAcceptRichText(False)
+        self._prompt_input.setMinimumHeight(140)
+
+        self._hint_label = QtWidgets.QLabel("支持粘贴 / 拖拽 / 上传图片")
+        self._hint_label.setObjectName("dropZoneHint")
+
+        self._label = QtWidgets.QLabel("未选择题目图片")
+        self._label.setObjectName("dropZoneFileName")
+        self._label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        self._upload_btn = QtWidgets.QPushButton("上传图片")
+        self._upload_btn.setObjectName("secondaryButton")
+        self._upload_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._upload_btn.clicked.connect(self._open_file_dialog)
+
+        footer = QtWidgets.QHBoxLayout()
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setSpacing(8)
+        footer.addWidget(self._hint_label)
+        footer.addStretch(1)
+        footer.addWidget(self._upload_btn)
+
+        info = QtWidgets.QHBoxLayout()
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setSpacing(8)
+        info.addWidget(self._label, 1)
+
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self._label)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        layout.addWidget(self._prompt_input)
+        layout.addLayout(info)
+        layout.addLayout(footer)
+
+    def _open_file_dialog(self) -> None:
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "选择题目图片",
+            str(ROOT),
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if file_path:
+            self.file_dropped.emit(file_path)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        if event.button() == QtCore.Qt.LeftButton:
-            file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                "选择题目图片",
-                str(ROOT),
-                "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
-            )
-            if file_path:
-                self.file_dropped.emit(file_path)
+        super().mousePressEvent(event)
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -121,9 +156,13 @@ class DropZone(QtWidgets.QFrame):
             self.file_dropped.emit(path)
 
     def set_filename(self, path: str | None) -> None:
-        self._label.setText(
-            Path(path).name if path else "粘贴 / 拖拽 / 点击选择文件"
-        )
+        self._label.setText(Path(path).name if path else "未选择题目图片")
+
+    def prompt_text(self) -> str:
+        return self._prompt_input.toPlainText()
+
+    def set_prompt_text(self, text: str) -> None:
+        self._prompt_input.setPlainText(text or "")
 
 
 class MessageCard(QtWidgets.QFrame):
@@ -143,11 +182,17 @@ class MessageCard(QtWidgets.QFrame):
         header = QtWidgets.QHBoxLayout()
         header.setSpacing(8)
 
+        icon_col = QtWidgets.QVBoxLayout()
+        icon_col.setContentsMargins(0, 0, 0, 0)
+        icon_col.setSpacing(4)
+
         self.icon_label = QtWidgets.QLabel(self._stage_short(stage))
         self.icon_label.setObjectName("agentIcon")
         self.icon_label.setAlignment(QtCore.Qt.AlignCenter)
         self.icon_label.setFixedSize(24, 24)
-        header.addWidget(self.icon_label)
+        icon_col.addWidget(self.icon_label, 0, QtCore.Qt.AlignHCenter)
+
+        header.addLayout(icon_col)
 
         title_label = QtWidgets.QLabel(title)
         title_label.setObjectName("messageTitle")
@@ -174,7 +219,7 @@ class MessageCard(QtWidgets.QFrame):
 
         layout.addLayout(header)
 
-        self.preview_label = QtWidgets.QLabel("处理中...")
+        self.preview_label = QtWidgets.QLabel("等待执行")
         self.preview_label.setObjectName("messagePreview")
         self.preview_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
         self.preview_label.setWordWrap(True)
@@ -237,7 +282,7 @@ class MessageCard(QtWidgets.QFrame):
 
     @staticmethod
     def _stage_short(stage: str) -> str:
-        mapping = {"solver": "S", "architect": "A", "director": "D", "coder": "C", "system": "I"}
+        mapping = {"solver": "S", "deepseek": "Q", "architect": "A", "director": "D", "animator": "M", "coder": "C", "system": "I"}
         return mapping.get(stage, "?")
 
     def _detect_dark(self) -> bool:
@@ -283,6 +328,8 @@ class MessageCard(QtWidgets.QFrame):
             self.status_label.setText("运行中")
             self.status_label.setObjectName("messageStatusRunning")
             self.spinner.setVisible(True)
+            if self.preview_label.text().strip() in {"", "等待执行", "处理中..."}:
+                self.preview_label.setText("处理中...")
         elif status == "done":
             self.status_label.setText("完成")
             self.status_label.setObjectName("messageStatusDone")
@@ -291,8 +338,16 @@ class MessageCard(QtWidgets.QFrame):
             self.status_label.setText("失败")
             self.status_label.setObjectName("messageStatusError")
             self.spinner.setVisible(False)
+            if not self.preview_label.text().strip():
+                self.preview_label.setText("执行失败")
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
+
+    def set_activity(self, text: str) -> None:
+        message = (text or "").strip()
+        if not message:
+            message = "处理中..."
+        self.preview_label.setText(message)
 
     def _toggle(self) -> None:
         self._expanded = not self._expanded
@@ -689,8 +744,10 @@ class AgentWorker(QtCore.QThread):
             if outputs.coder_failed:
                 self.coder_failed.emit({
                     "director_plan": outputs.director_plan,
+                    "animator_plan": outputs.animator_plan,
                     "run_dir": str(outputs.run_dir),
                     "render_options": self._render_options,
+                    "coder_output": outputs.coder_output,
                 })
             else:
                 self.finished.emit(
@@ -698,6 +755,7 @@ class AgentWorker(QtCore.QThread):
                         "solver": outputs.solver_answer,
                         "architect": outputs.architect_code,
                         "director": outputs.director_plan,
+                        "animator": outputs.animator_plan,
                         "coder": outputs.coder_output,
                         "run_dir": str(outputs.run_dir),
                         "render_options": self._render_options,
@@ -721,9 +779,10 @@ class CoderRetryWorker(QtCore.QThread):
     progress = QtCore.Signal(str)
     stage_result = QtCore.Signal(str, str)
 
-    def __init__(self, director_plan: str, render_options: dict, run_dir: str) -> None:
+    def __init__(self, director_plan: str, animator_plan: str, render_options: dict, run_dir: str) -> None:
         super().__init__()
         self._director_plan = director_plan
+        self._animator_plan = animator_plan
         self._render_options = render_options
         self._run_dir = Path(run_dir)
         self._workflow: AgentWorkflow | None = None
@@ -751,6 +810,7 @@ class CoderRetryWorker(QtCore.QThread):
             workflow = AgentWorkflow()
             self._workflow = workflow
             outputs = workflow.rerun_coder(
+                animator_plan=self._animator_plan,
                 director_plan=self._director_plan,
                 render_options=self._render_options,
                 run_dir=self._run_dir,
@@ -760,14 +820,17 @@ class CoderRetryWorker(QtCore.QThread):
             if outputs.coder_failed:
                 self.coder_failed.emit({
                     "director_plan": self._director_plan,
+                    "animator_plan": self._animator_plan,
                     "run_dir": str(self._run_dir),
                     "render_options": self._render_options,
+                    "coder_output": outputs.coder_output,
                 })
             else:
                 self.finished.emit({
                     "solver": outputs.solver_answer,
                     "architect": outputs.architect_code,
                     "director": outputs.director_plan,
+                    "animator": outputs.animator_plan,
                     "coder": outputs.coder_output,
                     "run_dir": str(outputs.run_dir),
                     "render_options": self._render_options,
@@ -962,7 +1025,7 @@ class VoiceRecordDialog(QtWidgets.QDialog):
         self.name_input.setMaxLength(30)
         layout.addWidget(self.name_input)
 
-        self.status_label = QtWidgets.QLabel("鐘舵€侊細鍑嗗灏辩华")
+        self.status_label = QtWidgets.QLabel("状态：准备就绪")
         layout.addWidget(self.status_label)
 
         btn_layout = QtWidgets.QHBoxLayout()

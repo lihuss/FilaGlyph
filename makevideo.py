@@ -39,6 +39,7 @@ from makevideo.scenes import (
     render_scenes_via_child_scripts,
 )
 from makevideo.subprocess import truncate_output
+from makevideo.tts import acquire_tts_slot
 from makevideo.tts import run_narration_child_script
 from makevideo.tts import read_narration_lines, run_segmented_narration_child_scripts
 
@@ -70,6 +71,12 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--quality", type=str, choices=["l", "m", "h", "p", "k"], default="h")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--resolution", type=str, default="1920,1080")
+    parser.add_argument(
+        "--run-dir",
+        type=str,
+        required=True,
+        help="Project-relative or absolute runtime workspace for this render task.",
+    )
 
     parser.add_argument(
         "--enable-multithread",
@@ -139,7 +146,7 @@ def main() -> None:
     if not scene_jobs:
         raise ValueError("No scene names selected for rendering")
 
-    run_dir = PROJECT_ROOT / "tmp"
+    run_dir = resolve_project_path(args.run_dir)
 
     ensure_run_workspace(run_dir)
     cleanup_runtime_artifacts(run_dir)
@@ -168,55 +175,56 @@ def main() -> None:
             process_registry: list[subprocess.Popen] = []
             registry_lock = threading.Lock()
 
-            if len(narration_lines) == len(scene_jobs):
-                segmented_tts_used = True
-                log_status(
-                    f"Synthesizing segmented narration: lines={len(narration_lines)}, scenes={len(scene_jobs)}",
-                    runtime_log_file,
-                )
-                _, narration_segment_durations, _, narration_duration, output = run_segmented_narration_child_scripts(
-                    narration_lines=narration_lines,
-                    output_audio=combined_narration_audio,
-                    tts_run_dir=run_dir / "tts_tmp_segmented",
-                    args=args,
-                    dub_runner_script=dub_runner_script,
-                    runtime_log_file=runtime_log_file,
-                    stop_event=stop_event,
-                    process_registry=process_registry,
-                    registry_lock=registry_lock,
-                )
-                if output.strip():
-                    log_status(truncate_output(output, limit=500), runtime_log_file)
-                log_status(
-                    "Segment durations(s): " + ", ".join([f"{d:.3f}" for d in narration_segment_durations]),
-                    runtime_log_file,
-                )
-            else:
-                log_status(
-                    (
-                        "Fallback to full narration synthesis: "
-                        f"narration-lines={len(narration_lines)} does not match scene-count={len(scene_jobs)}"
-                    ),
-                    runtime_log_file,
-                )
-                _, narration_duration, output = run_narration_child_script(
-                    narration_file=narration_source,
-                    output_audio=combined_narration_audio,
-                    tts_run_dir=run_dir / "tts_tmp_full",
-                    args=args,
-                    dub_runner_script=dub_runner_script,
-                    runtime_log_file=runtime_log_file,
-                    stop_event=stop_event,
-                    process_registry=process_registry,
-                    registry_lock=registry_lock,
-                )
-                if output.strip():
-                    log_status(truncate_output(output, limit=500), runtime_log_file)
-                merged_target_duration = narration_duration + SCENE_BUFFER_SECONDS
-                log_status(
-                    f"Single narration duration={narration_duration:.3f}s, merged target={merged_target_duration:.3f}s",
-                    runtime_log_file,
-                )
+            with acquire_tts_slot(runtime_log_file):
+                if len(narration_lines) == len(scene_jobs):
+                    segmented_tts_used = True
+                    log_status(
+                        f"Synthesizing segmented narration: lines={len(narration_lines)}, scenes={len(scene_jobs)}",
+                        runtime_log_file,
+                    )
+                    _, narration_segment_durations, _, narration_duration, output = run_segmented_narration_child_scripts(
+                        narration_lines=narration_lines,
+                        output_audio=combined_narration_audio,
+                        tts_run_dir=run_dir / "tts_tmp_segmented",
+                        args=args,
+                        dub_runner_script=dub_runner_script,
+                        runtime_log_file=runtime_log_file,
+                        stop_event=stop_event,
+                        process_registry=process_registry,
+                        registry_lock=registry_lock,
+                    )
+                    if output.strip():
+                        log_status(truncate_output(output, limit=500), runtime_log_file)
+                    log_status(
+                        "Segment durations(s): " + ", ".join([f"{d:.3f}" for d in narration_segment_durations]),
+                        runtime_log_file,
+                    )
+                else:
+                    log_status(
+                        (
+                            "Fallback to full narration synthesis: "
+                            f"narration-lines={len(narration_lines)} does not match scene-count={len(scene_jobs)}"
+                        ),
+                        runtime_log_file,
+                    )
+                    _, narration_duration, output = run_narration_child_script(
+                        narration_file=narration_source,
+                        output_audio=combined_narration_audio,
+                        tts_run_dir=run_dir / "tts_tmp_full",
+                        args=args,
+                        dub_runner_script=dub_runner_script,
+                        runtime_log_file=runtime_log_file,
+                        stop_event=stop_event,
+                        process_registry=process_registry,
+                        registry_lock=registry_lock,
+                    )
+                    if output.strip():
+                        log_status(truncate_output(output, limit=500), runtime_log_file)
+                    merged_target_duration = narration_duration + SCENE_BUFFER_SECONDS
+                    log_status(
+                        f"Single narration duration={narration_duration:.3f}s, merged target={merged_target_duration:.3f}s",
+                        runtime_log_file,
+                    )
 
         workers = len(scene_jobs) if args.enable_multithread else 1
         log_status(f"Rendering scenes via child scripts (workers={workers})", runtime_log_file)

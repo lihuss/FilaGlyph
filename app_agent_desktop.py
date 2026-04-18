@@ -67,8 +67,8 @@ def _patch_pyonedark_resource_paths() -> None:
 
 _patch_pyonedark_resource_paths()
 
-VISION_ROLES = {"solver", "architect", "director"}
-ROLE_NAMES = ("solver", "architect", "director", "coder")
+VISION_ROLES = {"solver", "architect", "director", "animator"}
+ROLE_NAMES = ("solver", "quantizer", "architect", "director", "animator", "coder")
 PROVIDER_BASE_URL = {
     "openai": "https://api.openai.com/v1",
     "gemini": "",
@@ -94,6 +94,111 @@ _patch_pyonedark_settings_path()
 
 
 from ui.components import ThemeToggleBar, DropZone, MessageCard, AgentWorker, CoderRetryWorker, InlineRenameWidget, AudioItemWidget, VoiceRecordDialog, VideoCard
+
+
+PAGE_HOME = 0
+PAGE_WORKBENCH = 1
+PAGE_SETTINGS = 2
+
+
+class _StatusSink:
+    def __init__(self) -> None:
+        self.last_message = ""
+
+    def showMessage(self, message: str, _timeout: int = 0) -> None:
+        self.last_message = str(message or "")
+
+
+class HomeRunCard(QtWidgets.QFrame):
+    opened = QtCore.Signal(str)
+    delete_requested = QtCore.Signal(str)
+    create_requested = QtCore.Signal()
+
+    def __init__(self, *, run_dir: str = "", title: str = "", status: str = "failed", is_create: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self._run_dir = run_dir
+        self._is_create = is_create
+        self._status = status
+        self._hovering = False
+        self.setObjectName("homeRunCard")
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setMinimumHeight(132)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(0)
+        header.addStretch(1)
+
+        self.status_btn = QtWidgets.QToolButton(self)
+        self.status_btn.setObjectName("homeCardStatus")
+        self.status_btn.setFixedSize(18, 18)
+        self.status_btn.clicked.connect(self._on_status_clicked)
+        header.addWidget(self.status_btn)
+        layout.addLayout(header)
+
+        self.title_label = QtWidgets.QLabel(title)
+        self.title_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.title_label.setObjectName("historyTitle")
+        self.title_label.setWordWrap(True)
+        layout.addStretch(1)
+        layout.addWidget(self.title_label)
+        layout.addStretch(1)
+
+        if self._is_create:
+            self.title_label.setText("+")
+            font = self.title_label.font()
+            font.setPointSize(max(font.pointSize() + 8, 26))
+            self.title_label.setFont(font)
+            self.status_btn.hide()
+        self._apply_status_style()
+
+    def _status_color(self) -> str:
+        if self._status == "running":
+            return "#ffffff"
+        if self._status in {"success", "finished_without_video"}:
+            return "#16a34a"
+        return "#ef4444"
+
+    def _apply_status_style(self) -> None:
+        if self._is_create:
+            return
+        if self._hovering:
+            self.status_btn.setText("×")
+            self.status_btn.setStyleSheet(
+                "QToolButton { border: none; border-radius: 9px; background: #9ca3af; color: #111827; font-weight: 700; }"
+            )
+            return
+        self.status_btn.setText("")
+        self.status_btn.setStyleSheet(
+            f"QToolButton {{ border: none; border-radius: 6px; background: {self._status_color()}; }}"
+        )
+
+    def enterEvent(self, event: QtCore.QEvent) -> None:
+        self._hovering = True
+        self._apply_status_style()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        self._hovering = False
+        self._apply_status_style()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() != QtCore.Qt.LeftButton:
+            return super().mousePressEvent(event)
+        if self._is_create:
+            self.create_requested.emit()
+            return
+        self.opened.emit(self._run_dir)
+
+    def _on_status_clicked(self) -> None:
+        if self._is_create:
+            return
+        self.delete_requested.emit(self._run_dir)
 
 
 class ClipboardImageSaveWorker(QtCore.QThread):
@@ -139,6 +244,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._image_path: str | None = None
         self._worker: AgentWorker | CoderRetryWorker | None = None
+        self._background_workers: list[AgentWorker | CoderRetryWorker] = []
+        self._foreground_run_dir: str = ""
         self._role_controls: Dict[str, Dict[str, QtWidgets.QWidget]] = {}
         self._stage_cards: Dict[str, MessageCard] = {}
         self._active_stage: str | None = None
@@ -151,6 +258,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._clipboard_save_worker: ClipboardImageSaveWorker | None = None
         self._active_run_dir: str = ""
         self._active_render_options: dict[str, Any] = {}
+        self._pending_runs: list[dict[str, Any]] = []
 
         self._load_ui_settings()
 
@@ -241,39 +349,27 @@ class MainWindow(QtWidgets.QMainWindow):
         brand.setObjectName("brand")
         sb.addWidget(brand)
 
-        self.workbench_btn = self._new_button("工作台")
-        self.workbench_btn.setObjectName("navActive")
-        self.workbench_btn.clicked.connect(lambda: self._switch_page(0))
-        sb.addWidget(self.workbench_btn)
-
-        self.audio_btn = self._new_button("音频")
-        self.audio_btn.setObjectName("navButton")
-        self.audio_btn.clicked.connect(lambda: self._switch_page(1))
-        sb.addWidget(self.audio_btn)
-
-        self.history_btn = self._new_button("历史记录")
-        self.history_btn.setObjectName("navButton")
-        self.history_btn.clicked.connect(lambda: self._switch_page(2))
-        sb.addWidget(self.history_btn)
+        self.home_btn = self._new_button("主页")
+        self.home_btn.setObjectName("navActive")
+        self.home_btn.clicked.connect(lambda: self._switch_page(PAGE_HOME))
+        sb.addWidget(self.home_btn)
 
         self.settings_btn = self._new_button("设置")
         self.settings_btn.setObjectName("navButton")
-        self.settings_btn.clicked.connect(lambda: self._switch_page(3))
+        self.settings_btn.clicked.connect(lambda: self._switch_page(PAGE_SETTINGS))
         sb.addWidget(self.settings_btn)
         sb.addStretch(1)
 
         self.pages = QtWidgets.QStackedWidget()
+        self.pages.addWidget(self._build_home_page())
         self.pages.addWidget(self._build_workbench_page())
-        self.pages.addWidget(self._build_audio_page())
-        self.pages.addWidget(self._build_history_page())
         self.pages.addWidget(self._build_settings_page())
 
         main.addWidget(sidebar)
         main.addWidget(self.pages, 1)
 
-        self.status_bar = QtWidgets.QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("灏辩华")
+        self.status_bar = _StatusSink()
+        self.status_bar.showMessage("就绪")
 
     def _apply_elevations(self) -> None:
         for card in self._page_cards:
@@ -295,9 +391,19 @@ class MainWindow(QtWidgets.QMainWindow):
         il.setContentsMargins(18, 18, 18, 18)
         il.setSpacing(12)
 
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        self.back_home_button = self._new_button("←")
+        self.back_home_button.setObjectName("backButton")
+        self.back_home_button.setFixedSize(36, 36)
+        self.back_home_button.clicked.connect(lambda: self._switch_page(PAGE_HOME))
+        header.addWidget(self.back_home_button)
         title = QtWidgets.QLabel("输入")
         title.setObjectName("sectionTitle")
-        il.addWidget(title)
+        header.addWidget(title)
+        header.addStretch(1)
+        il.addLayout(header)
 
         self.file_info = QtWidgets.QLabel("未选择题目图片")
         self.file_info.setObjectName("fileInfo")
@@ -321,8 +427,10 @@ class MainWindow(QtWidgets.QMainWindow):
         il.addWidget(self.music_combo)
         self._reload_music_options()
 
-        self.run_button = self._new_button("启动", role="primary")
+        self.run_button = QtWidgets.QPushButton("启动")
         self.run_button.setObjectName("runButton")
+        self.run_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self.run_button.setMinimumHeight(40)
         self.run_button.setProperty("danger", False)
         self.run_button.setProperty("warning", False)
         self.run_button.clicked.connect(self._run_workflow)
@@ -355,60 +463,6 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(input_card, 3)
         layout.addWidget(output_card, 7)
         self._page_cards.extend([input_card, output_card])
-        return page
-
-    def _build_audio_page(self) -> QtWidgets.QWidget:
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(16)
-
-        voice_card = QtWidgets.QFrame()
-        voice_card.setObjectName("card")
-        vl = QtWidgets.QVBoxLayout(voice_card)
-        vl.setContentsMargins(18, 18, 18, 18)
-        vl.setSpacing(12)
-        voice_title = QtWidgets.QLabel("音色素材")
-        voice_title.setObjectName("sectionTitle")
-        vl.addWidget(voice_title)
-        self.voice_assets_list = QtWidgets.QListWidget()
-        self.voice_assets_list.setObjectName("assetList")
-        self.voice_assets_list.setSpacing(6)
-        self.voice_assets_list.setIconSize(QtCore.QSize(18, 18))
-        self.voice_assets_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.voice_assets_list.customContextMenuRequested.connect(
-            lambda pos: self._show_asset_context_menu(pos, "voices")
-        )
-        self.voice_assets_list.itemClicked.connect(
-            lambda item: self._on_asset_item_clicked(item, "voices")
-        )
-        vl.addWidget(self.voice_assets_list, 1)
-
-        music_card = QtWidgets.QFrame()
-        music_card.setObjectName("card")
-        ml = QtWidgets.QVBoxLayout(music_card)
-        ml.setContentsMargins(18, 18, 18, 18)
-        ml.setSpacing(12)
-        music_title = QtWidgets.QLabel("配乐素材")
-        music_title.setObjectName("sectionTitle")
-        ml.addWidget(music_title)
-        self.music_assets_list = QtWidgets.QListWidget()
-        self.music_assets_list.setObjectName("assetList")
-        self.music_assets_list.setSpacing(6)
-        self.music_assets_list.setIconSize(QtCore.QSize(18, 18))
-        self.music_assets_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.music_assets_list.customContextMenuRequested.connect(
-            lambda pos: self._show_asset_context_menu(pos, "musics")
-        )
-        self.music_assets_list.itemClicked.connect(
-            lambda item: self._on_asset_item_clicked(item, "musics")
-        )
-        ml.addWidget(self.music_assets_list, 1)
-
-        layout.addWidget(voice_card, 1)
-        layout.addWidget(music_card, 1)
-        self._page_cards.extend([voice_card, music_card])
-        self._refresh_audio_assets_lists()
         return page
 
     def _build_role_row(self, role: str) -> QtWidgets.QWidget:
@@ -484,11 +538,65 @@ class MainWindow(QtWidgets.QMainWindow):
 
         layout.addWidget(appearance_card)
         layout.addWidget(card)
+
+        audio_card = QtWidgets.QFrame()
+        audio_card.setObjectName("card")
+        al = QtWidgets.QHBoxLayout(audio_card)
+        al.setContentsMargins(18, 18, 18, 18)
+        al.setSpacing(16)
+
+        voice_box = QtWidgets.QFrame()
+        voice_box.setObjectName("card")
+        vl = QtWidgets.QVBoxLayout(voice_box)
+        vl.setContentsMargins(12, 12, 12, 12)
+        vl.setSpacing(8)
+        voice_title = QtWidgets.QLabel("音色素材")
+        voice_title.setObjectName("sectionTitle")
+        vl.addWidget(voice_title)
+        self.voice_assets_list = QtWidgets.QListWidget()
+        self.voice_assets_list.setObjectName("assetList")
+        self.voice_assets_list.setSpacing(6)
+        self.voice_assets_list.setIconSize(QtCore.QSize(18, 18))
+        self.voice_assets_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.voice_assets_list.customContextMenuRequested.connect(
+            lambda pos: self._show_asset_context_menu(pos, "voices")
+        )
+        self.voice_assets_list.itemClicked.connect(
+            lambda item: self._on_asset_item_clicked(item, "voices")
+        )
+        vl.addWidget(self.voice_assets_list, 1)
+
+        music_box = QtWidgets.QFrame()
+        music_box.setObjectName("card")
+        ml = QtWidgets.QVBoxLayout(music_box)
+        ml.setContentsMargins(12, 12, 12, 12)
+        ml.setSpacing(8)
+        music_title = QtWidgets.QLabel("配乐素材")
+        music_title.setObjectName("sectionTitle")
+        ml.addWidget(music_title)
+        self.music_assets_list = QtWidgets.QListWidget()
+        self.music_assets_list.setObjectName("assetList")
+        self.music_assets_list.setSpacing(6)
+        self.music_assets_list.setIconSize(QtCore.QSize(18, 18))
+        self.music_assets_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.music_assets_list.customContextMenuRequested.connect(
+            lambda pos: self._show_asset_context_menu(pos, "musics")
+        )
+        self.music_assets_list.itemClicked.connect(
+            lambda item: self._on_asset_item_clicked(item, "musics")
+        )
+        ml.addWidget(self.music_assets_list, 1)
+
+        al.addWidget(voice_box, 1)
+        al.addWidget(music_box, 1)
+        layout.addWidget(audio_card)
+
+        self._refresh_audio_assets_lists()
         layout.addStretch(1)
-        self._page_cards.extend([appearance_card, card])
+        self._page_cards.extend([appearance_card, card, audio_card])
         return page
 
-    def _build_history_page(self) -> QtWidgets.QWidget:
+    def _build_home_page(self) -> QtWidgets.QWidget:
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -500,28 +608,23 @@ class MainWindow(QtWidgets.QMainWindow):
         body.setContentsMargins(20, 20, 20, 20)
         body.setSpacing(14)
 
-        title = QtWidgets.QLabel("历史记录")
+        title = QtWidgets.QLabel("主页")
         title.setObjectName("sectionTitle")
         body.addWidget(title)
 
-        subtitle = QtWidgets.QLabel("打开过去的流程，查看结果或删除记录。")
-        subtitle.setObjectName("fileInfo")
-        subtitle.setWordWrap(True)
-        body.addWidget(subtitle)
+        self.home_scroll = QtWidgets.QScrollArea()
+        self.home_scroll.setObjectName("outputScroll")
+        self.home_scroll.setWidgetResizable(True)
+        self.home_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
 
-        self.history_scroll = QtWidgets.QScrollArea()
-        self.history_scroll.setObjectName("outputScroll")
-        self.history_scroll.setWidgetResizable(True)
-        self.history_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-
-        self.history_wrap = QtWidgets.QWidget()
-        self.history_wrap.setObjectName("outputWrap")
-        self.history_stack = QtWidgets.QVBoxLayout(self.history_wrap)
-        self.history_stack.setContentsMargins(4, 4, 4, 4)
-        self.history_stack.setSpacing(12)
-        self.history_stack.addStretch(1)
-        self.history_scroll.setWidget(self.history_wrap)
-        body.addWidget(self.history_scroll, 1)
+        self.home_wrap = QtWidgets.QWidget()
+        self.home_wrap.setObjectName("outputWrap")
+        self.home_grid = QtWidgets.QGridLayout(self.home_wrap)
+        self.home_grid.setContentsMargins(4, 4, 4, 4)
+        self.home_grid.setHorizontalSpacing(12)
+        self.home_grid.setVerticalSpacing(12)
+        self.home_scroll.setWidget(self.home_wrap)
+        body.addWidget(self.home_scroll, 1)
 
         layout.addWidget(card)
         self._page_cards.append(card)
@@ -551,6 +654,45 @@ class MainWindow(QtWidgets.QMainWindow):
             encoding="utf-8",
         )
 
+    @staticmethod
+    def _read_text_tail(path: Path, max_lines: int = 80) -> str:
+        if not path.exists() or not path.is_file():
+            return ""
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+        lines = text.splitlines()
+        tail = lines[-max_lines:] if lines else []
+        return "\n".join(tail).strip()
+
+    def _build_coder_failure_detail(self, payload: dict) -> str:
+        direct = str(payload.get("coder_output", "") or "").strip()
+        if direct:
+            return direct
+
+        run_dir_str = str(payload.get("run_dir", "") or "").strip()
+        if not run_dir_str:
+            return "Coder 执行失败，但未返回错误详情。"
+
+        run_dir = Path(run_dir_str)
+        coder_output_path = run_dir / "coder_output.md"
+        from_file = self._read_text_tail(coder_output_path, max_lines=120)
+        if from_file:
+            return from_file
+
+        snippets: list[str] = []
+        makevideo_log = self._read_text_tail(run_dir / "makevideo.log", max_lines=80)
+        if makevideo_log:
+            snippets.append("[makevideo.log tail]\n" + makevideo_log)
+        coder_tools_log = self._read_text_tail(run_dir / "coder_tools.log", max_lines=80)
+        if coder_tools_log:
+            snippets.append("[coder_tools.log tail]\n" + coder_tools_log)
+
+        if snippets:
+            return "\n\n".join(snippets)
+        return "Coder 执行失败，但运行目录中未找到可读的错误日志。"
+
     def _resolve_run_video_path(self, run_dir: Path, meta: dict[str, Any] | None = None) -> Path | None:
         info = meta or self._read_run_meta(run_dir)
         video_value = str(info.get("video_path", "") or "").strip()
@@ -569,13 +711,14 @@ class MainWindow(QtWidgets.QMainWindow):
         has_solver = (run_dir / "solver_answer.md").exists()
         has_architect = (run_dir / "architect_code.py").exists()
         has_director = (run_dir / "director_plan.md").exists()
+        has_animator = (run_dir / "animator_codegen.md").exists() or (run_dir / "animator_plan.md").exists()
         has_coder = (run_dir / "coder_output.md").exists() or (run_dir / "coder_output.py").exists()
         if not status:
             status = "success" if video_path else "failed"
-        retryable = has_director and has_coder and video_path is None and status != "cancelled"
+        retryable = has_director and has_animator and has_coder and video_path is None and status != "cancelled"
         resumable = video_path is None and (
             status == "cancelled"
-            or (status == "failed" and not retryable and (has_solver or has_architect or has_director))
+            or (status == "failed" and not retryable and (has_solver or has_architect or has_director or has_animator))
         )
         image_name = str(meta.get("image", "") or "").strip()
         render_options = meta.get("render_options", {})
@@ -586,6 +729,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "meta": meta,
             "video_path": video_path,
             "status": status,
+            "last_progress": str(meta.get("last_progress", "") or "").strip(),
+            "current_stage": str(meta.get("current_stage", "") or "").strip(),
             "retryable": retryable,
             "resumable": resumable,
             "image_name": image_name,
@@ -593,15 +738,17 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
     def _clear_history_cards(self) -> None:
-        while self.history_stack.count() > 1:
-            item = self.history_stack.takeAt(0)
+        if not hasattr(self, "home_grid"):
+            return
+        while self.home_grid.count() > 0:
+            item = self.home_grid.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
 
     def _refresh_history_page(self) -> None:
-        if not hasattr(self, "history_stack"):
+        if not hasattr(self, "home_grid"):
             return
         self._clear_history_cards()
         runs_root = self._history_runs_root()
@@ -611,104 +758,93 @@ class MainWindow(QtWidgets.QMainWindow):
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
-        if not runs:
-            empty = QtWidgets.QFrame()
-            empty.setObjectName("historyCard")
-            empty_layout = QtWidgets.QVBoxLayout(empty)
-            empty_layout.setContentsMargins(18, 18, 18, 18)
-            empty_layout.setSpacing(6)
-            title = QtWidgets.QLabel("还没有历史记录")
-            title.setObjectName("historyTitle")
-            desc = QtWidgets.QLabel("新的流程完成后会出现在这里。")
-            desc.setObjectName("historyMeta")
-            empty_layout.addWidget(title)
-            empty_layout.addWidget(desc)
-            self.history_stack.insertWidget(0, empty)
-            return
+        cards: list[QtWidgets.QWidget] = []
+        create_card = HomeRunCard(is_create=True)
+        create_card.create_requested.connect(self._open_new_workflow)
+        cards.append(create_card)
         for run_dir in runs:
             item = self._infer_history_item(run_dir)
-            self.history_stack.insertWidget(self.history_stack.count() - 1, self._build_history_card(item))
+            cards.append(self._build_history_card(item))
+
+        columns = 4
+        for index, widget in enumerate(cards):
+            row = index // columns
+            col = index % columns
+            self.home_grid.addWidget(widget, row, col)
+        self.home_grid.setColumnStretch(columns, 1)
 
     def _build_history_card(self, item: dict[str, Any]) -> QtWidgets.QFrame:
         run_dir: Path = item["run_dir"]
-        video_path: Path | None = item["video_path"]
         status = item["status"]
-        retryable = bool(item["retryable"])
-        resumable = bool(item["resumable"])
-
-        card = QtWidgets.QFrame()
-        card.setObjectName("historyCard")
-        layout = QtWidgets.QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        header = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel(run_dir.name)
-        title.setObjectName("historyTitle")
-        header.addWidget(title)
-        header.addStretch(1)
-
-        if video_path:
-            badge = QtWidgets.QLabel("成功")
-            badge.setObjectName("historyBadgeSuccess")
-        elif resumable:
-            badge = QtWidgets.QLabel("已终止")
-            badge.setObjectName("historyBadgeFailed")
-        else:
-            badge = QtWidgets.QLabel("失败")
-            badge.setObjectName("historyBadgeFailed")
-        header.addWidget(badge)
-        layout.addLayout(header)
-
-        updated_text = datetime.fromtimestamp(run_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-        image_name = item["image_name"] or "未记录图片"
-        meta = QtWidgets.QLabel(f"图片：{image_name}    更新时间：{updated_text}")
-        meta.setObjectName("historyMeta")
-        meta.setWordWrap(True)
-        layout.addWidget(meta)
-
-        if video_path:
-            video_info = QtWidgets.QLabel(f"视频：{video_path.name}")
-        elif resumable:
-            video_info = QtWidgets.QLabel("任务已终止，可继续运行。")
-        elif retryable:
-            video_info = QtWidgets.QLabel("Coder 失败，可重新执行。")
-        else:
-            video_info = QtWidgets.QLabel(f"状态：{status or 'unknown'}")
-        video_info.setObjectName("historyMeta")
-        video_info.setWordWrap(True)
-        layout.addWidget(video_info)
-
-        actions = QtWidgets.QHBoxLayout()
-        actions.setSpacing(10)
-
-        open_btn = QtWidgets.QPushButton("打开流程")
-        open_btn.setObjectName("secondaryButton")
-        open_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        open_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
-        open_btn.clicked.connect(lambda _=False, path=run_dir: self._open_history_run(path))
-        actions.addWidget(open_btn)
-
-        if resumable:
-            continue_btn = QtWidgets.QPushButton("继续运行")
-            continue_btn.setObjectName("runButton")
-            continue_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            continue_btn.clicked.connect(lambda _=False, path=run_dir: self._continue_history_run(path))
-            actions.addWidget(continue_btn)
-        delete_btn = QtWidgets.QPushButton("删除记录")
-        delete_btn.setObjectName("secondaryButton")
-        delete_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        delete_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_TrashIcon))
-        delete_btn.clicked.connect(lambda _=False, path=run_dir: self._delete_history_run(path))
-        actions.addWidget(delete_btn)
-        actions.addStretch(1)
-        layout.addLayout(actions)
+        card = HomeRunCard(run_dir=str(run_dir), title=run_dir.name, status=status)
+        card.opened.connect(self._open_history_run_by_str)
+        card.delete_requested.connect(self._confirm_delete_history_run)
         return card
 
+    def _open_new_workflow(self) -> None:
+        self._switch_page(PAGE_WORKBENCH)
+        self._start_new_project()
+
+    def _open_history_run_by_str(self, run_dir_str: str) -> None:
+        run_dir = Path(run_dir_str)
+        if run_dir.exists():
+            self._open_history_run(run_dir)
+
+    def _confirm_delete_history_run(self, run_dir_str: str) -> None:
+        run_dir = Path(run_dir_str)
+        if not run_dir.exists():
+            self._refresh_history_page()
+            return
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "删除记录",
+            f"确定删除历史记录 {run_dir.name} 吗？这不会删除已导出的视频文件。",
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        self._delete_history_run(run_dir)
+
     def _open_history_run(self, run_dir: Path) -> None:
+        self._focus_running_workflow(run_dir, switch_only=True)
         self._load_run_into_workbench(run_dir)
-        self._switch_page(0)
+        self._switch_page(PAGE_WORKBENCH)
         self.status_bar.showMessage(f"已打开流程：{run_dir.name}")
+
+    def _focus_running_workflow(self, run_dir: Path, switch_only: bool = False) -> None:
+        worker = self._find_background_worker_by_run_dir(run_dir)
+        if worker is None:
+            return
+        if self._worker is not None and self._worker.isRunning():
+            self._detach_current_worker_to_background()
+        self._connect_worker_foreground(worker)
+        if not switch_only:
+            self._load_run_into_workbench(run_dir)
+            self._switch_page(PAGE_WORKBENCH)
+        self.status_bar.showMessage(f"已切换到前台任务：{run_dir.name}")
+
+    def _cancel_running_workflow(self, run_dir: Path) -> None:
+        if self._worker is not None and self._worker.isRunning() and self._foreground_run_dir:
+            try:
+                if Path(self._foreground_run_dir).resolve() == run_dir.resolve():
+                    self._request_stop()
+                    return
+            except Exception:
+                pass
+        worker = self._find_background_worker_by_run_dir(run_dir)
+        if worker is None:
+            QtWidgets.QMessageBox.information(self, "提示", "未找到该运行中的任务实例，可能已结束。")
+            self._refresh_history_page()
+            return
+        worker.request_cancel()
+        self._write_run_meta(
+            run_dir,
+            {
+                "status": "cancel_requested",
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        self.status_bar.showMessage(f"已请求终止任务：{run_dir.name}")
+        self._refresh_history_page()
 
     def _retry_history_run(self, run_dir: Path) -> None:
         item = self._infer_history_item(run_dir)
@@ -716,10 +852,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self._open_history_run(run_dir)
             return
         self._load_run_into_workbench(run_dir)
-        self._switch_page(0)
+        self._switch_page(PAGE_WORKBENCH)
         director_plan_path = run_dir / "director_plan.md"
+        animator_plan_path = run_dir / "animator_codegen.md"
+        if not animator_plan_path.exists():
+            animator_plan_path = run_dir / "animator_plan.md"
         payload = {
             "director_plan": director_plan_path.read_text(encoding="utf-8"),
+            "animator_plan": animator_plan_path.read_text(encoding="utf-8") if animator_plan_path.exists() else "",
             "run_dir": str(run_dir),
             "render_options": item["render_options"],
         }
@@ -728,7 +868,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _continue_history_run(self, run_dir: Path) -> None:
         item = self._infer_history_item(run_dir)
         self._load_run_into_workbench(run_dir)
-        self._switch_page(0)
+        self._switch_page(PAGE_WORKBENCH)
         payload = {
             "run_dir": str(run_dir),
             "render_options": item["render_options"],
@@ -766,19 +906,31 @@ class MainWindow(QtWidgets.QMainWindow):
             self.file_info.setText("未选择题目图片")
             self.drop_zone.set_filename(None)
 
+        solver_prompt_text = ""
+        if isinstance(render_options, dict):
+            solver_prompt_text = str(render_options.get("solver_prompt_text", "") or "")
+        self.drop_zone.set_prompt_text(solver_prompt_text)
+
         coder_name = "coder_output.md"
         if (run_dir / "coder_output.py").exists() and not (run_dir / "coder_output.md").exists():
             coder_name = "coder_output.py"
 
         for stage, fname in (
-            ("solver", "solver_answer.md"),
+            ("solver", "solver_output.md"),
             ("architect", "architect_code.py"),
             ("director", "director_plan.md"),
+            ("animator", "animator_codegen.md"),
             ("coder", coder_name),
         ):
             path = run_dir / fname
+            if stage == "solver" and not path.exists():
+                path = run_dir / "solver_answer.md"
             if path.exists():
                 self._on_stage_result(stage, path.read_text(encoding="utf-8"))
+        # Backward compatibility for older runs using animator_plan.md
+        legacy_animator = run_dir / "animator_plan.md"
+        if legacy_animator.exists() and "animator" not in self._stage_cards:
+            self._on_stage_result("animator", legacy_animator.read_text(encoding="utf-8"))
 
         video_path = self._resolve_run_video_path(run_dir, meta)
         if video_path is not None:
@@ -790,9 +942,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 "render_options": render_options,
             }
             self._show_continue_action(payload, "任务已终止，可从当前进度继续运行。")
-        elif (run_dir / "director_plan.md").exists():
+        elif (run_dir / "director_plan.md").exists() and (
+            (run_dir / "animator_codegen.md").exists() or (run_dir / "animator_plan.md").exists()
+        ):
+            animator_plan_path = run_dir / "animator_codegen.md"
+            if not animator_plan_path.exists():
+                animator_plan_path = run_dir / "animator_plan.md"
             payload = {
                 "director_plan": (run_dir / "director_plan.md").read_text(encoding="utf-8"),
+                "animator_plan": animator_plan_path.read_text(encoding="utf-8"),
                 "run_dir": str(run_dir),
                 "render_options": render_options,
             }
@@ -801,34 +959,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _switch_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
-        if index == 0:
-            self._reload_voice_combo()
-            self.workbench_btn.setObjectName("navActive")
-            self.audio_btn.setObjectName("navButton")
-            self.history_btn.setObjectName("navButton")
-            self.settings_btn.setObjectName("navButton")
-        elif index == 1:
-            self.workbench_btn.setObjectName("navButton")
-            self.audio_btn.setObjectName("navActive")
-            self.settings_btn.setObjectName("navButton")
-            self.history_btn.setObjectName("navButton")
-        elif index == 2:
-            self.workbench_btn.setObjectName("navButton")
-            self.audio_btn.setObjectName("navButton")
-            self.history_btn.setObjectName("navActive")
+        if index == PAGE_HOME:
+            self.home_btn.setObjectName("navActive")
             self.settings_btn.setObjectName("navButton")
             self._refresh_history_page()
+        elif index == PAGE_WORKBENCH:
+            self._reload_voice_combo()
+            self.home_btn.setObjectName("navButton")
+            self.settings_btn.setObjectName("navButton")
         else:
-            self.workbench_btn.setObjectName("navButton")
-            self.audio_btn.setObjectName("navButton")
-            self.history_btn.setObjectName("navButton")
+            self.home_btn.setObjectName("navButton")
             self.settings_btn.setObjectName("navActive")
-        self.workbench_btn.style().unpolish(self.workbench_btn)
-        self.workbench_btn.style().polish(self.workbench_btn)
-        self.audio_btn.style().unpolish(self.audio_btn)
-        self.audio_btn.style().polish(self.audio_btn)
-        self.history_btn.style().unpolish(self.history_btn)
-        self.history_btn.style().polish(self.history_btn)
+        self.home_btn.style().unpolish(self.home_btn)
+        self.home_btn.style().polish(self.home_btn)
         self.settings_btn.style().unpolish(self.settings_btn)
         self.settings_btn.style().polish(self.settings_btn)
 
@@ -847,6 +990,8 @@ class MainWindow(QtWidgets.QMainWindow):
             key_input: QtWidgets.QLineEdit = controls["key"]  # type: ignore[assignment]
 
             role_cfg = roles.get(role, {})
+            if role == "quantizer" and not role_cfg:
+                role_cfg = roles.get("coder", {})
             model = str(role_cfg.get("model", ""))
             model_input.setText(model)
             key_input.setText(str(role_cfg.get("api_key", "")))
@@ -855,12 +1000,26 @@ class MainWindow(QtWidgets.QMainWindow):
         raw = load_agent_config_json()
         roles = raw.setdefault("roles", {})
 
+        coder_model = ""
+        coder_key = ""
+        if "coder" in self._role_controls:
+            coder_controls = self._role_controls["coder"]
+            coder_model_input: QtWidgets.QLineEdit = coder_controls["model"]  # type: ignore[assignment]
+            coder_key_input: QtWidgets.QLineEdit = coder_controls["key"]  # type: ignore[assignment]
+            coder_model = coder_model_input.text().strip()
+            coder_key = coder_key_input.text().strip()
+
         for role in ROLE_NAMES:
             controls = self._role_controls[role]
             model_input: QtWidgets.QLineEdit = controls["model"]  # type: ignore[assignment]
             key_input: QtWidgets.QLineEdit = controls["key"]  # type: ignore[assignment]
 
             model = model_input.text().strip()
+            key = key_input.text().strip()
+            if role == "quantizer" and not model:
+                model = coder_model
+            if role == "quantizer" and not key:
+                key = coder_key
             if not model:
                 QtWidgets.QMessageBox.warning(self, "提示", f"{role} 的模型名称不能为空。")
                 return
@@ -868,7 +1027,7 @@ class MainWindow(QtWidgets.QMainWindow):
             role_cfg = roles.setdefault(role, {})
             role_cfg["provider"] = ""
             role_cfg["model"] = model
-            role_cfg["api_key"] = key_input.text().strip()
+            role_cfg["api_key"] = key
             role_cfg["base_url"] = self._base_url_for_model(model)
 
         save_agent_config_json(raw)
@@ -1190,7 +1349,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_bar.showMessage(f"粘贴图片失败: {error or '未知错误'}")
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
-        if self.pages.currentIndex() == 0 and event.matches(QtGui.QKeySequence.Paste):
+        if self.pages.currentIndex() == PAGE_WORKBENCH and event.matches(QtGui.QKeySequence.Paste):
             if self._paste_image_from_clipboard():
                 event.accept()
                 return
@@ -1217,10 +1376,24 @@ class MainWindow(QtWidgets.QMainWindow):
             return card
         card = MessageCard(stage, title)
         card.set_status("running")
+        card.set_activity("等待执行")
         self._stage_cards[stage] = card
         self.output_stack.insertWidget(self.output_stack.count() - 1, card)
         QtCore.QTimer.singleShot(0, self._scroll_bottom)
         return card
+
+    def _progress_activity_text(self, message: str, stage: str) -> str:
+        text = str(message or "").strip()
+        if not text:
+            return "处理中..."
+        lower = text.lower()
+        marker = f"{stage}:"
+        pos = lower.find(marker)
+        if pos >= 0:
+            sliced = text[pos + len(marker):].strip(" -:：")
+            if sliced:
+                return sliced
+        return text
 
     def _clear_output_cards(self) -> None:
         """Remove all message/video cards from the output stack before a new run."""
@@ -1235,33 +1408,250 @@ class MainWindow(QtWidgets.QMainWindow):
         bar = self.output_scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
+    def _active_worker_count(self) -> int:
+        self._background_workers = [w for w in self._background_workers if w.isRunning()]
+        count = len(self._background_workers)
+        if self._worker is not None and self._worker.isRunning():
+            count += 1
+        return count
+
+    def _target_concurrency(self) -> int:
+        cpu_count = os.cpu_count() or 4
+        if cpu_count <= 6:
+            return 2
+        if cpu_count <= 12:
+            return 3
+        return 4
+
+    def _refresh_task_console(self) -> None:
+        # Task console UI was removed. Queue is now managed internally.
+        return
+
+    def _enqueue_pending_run(self, image_path: str, render_options: dict[str, Any]) -> None:
+        self._pending_runs.append(
+            {
+                "id": uuid.uuid4().hex,
+                "image_path": image_path,
+                "render_options": dict(render_options),
+                "created": datetime.now().strftime("%H:%M:%S"),
+            }
+        )
+        self.status_bar.showMessage("已加入排队，等待可用并发槽位")
+
+    def _start_worker_background(self, image_path: str, render_options: dict[str, Any]) -> None:
+        worker = AgentWorker(image_path, render_options=render_options)
+        self._connect_worker_background(worker)
+        self._background_workers.append(worker)
+        worker.start()
+
+    def _dispatch_pending_workflows(self) -> None:
+        while self._pending_runs and self._active_worker_count() < self._target_concurrency():
+            task = self._pending_runs.pop(0)
+            image_path = str(task.get("image_path", "") or "").strip()
+            render_options = task.get("render_options", {})
+            if not image_path:
+                continue
+            self._start_worker_background(image_path, render_options if isinstance(render_options, dict) else {})
+
     def _run_workflow(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._request_stop()
             return
-        if self._run_button_mode == "new_project":
-            self._start_new_project()
-            return
         if not self._image_path:
             QtWidgets.QMessageBox.warning(self, "提示", "请先上传题目图片。")
             return
+        render_options = self._collect_render_options_from_ui()
+        image_path = str(self._image_path)
+        if self._active_worker_count() >= self._target_concurrency():
+            self._enqueue_pending_run(image_path, render_options)
+            return
+
         self._set_busy(True)
         self._stop_requested = False
         self._clear_output_cards()
         self._stage_cards = {}
         self._active_stage = None
-        self.status_bar.showMessage("正在运行 Agent 工作流...")
-        render_options = self._collect_render_options_from_ui()
         self._active_render_options = dict(render_options)
         self._active_run_dir = ""
-        self._worker = AgentWorker(self._image_path, render_options=render_options)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.cancelled.connect(self._on_cancelled)
-        self._worker.coder_failed.connect(self._on_coder_failed)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.stage_result.connect(self._on_stage_result)
+        self._worker = AgentWorker(image_path, render_options=render_options)
+        self._connect_worker_foreground(self._worker)
         self._worker.start()
+
+    def _detach_current_worker_to_background(self) -> None:
+        worker = self._worker
+        if worker is None or not worker.isRunning():
+            return
+        self._connect_worker_background(worker)
+        if worker not in self._background_workers:
+            self._background_workers.append(worker)
+        self._worker = None
+        self._foreground_run_dir = ""
+        self._stop_requested = False
+        self._refresh_task_console()
+
+    def _disconnect_worker_signals(self, worker: AgentWorker | CoderRetryWorker) -> None:
+        signal_handlers = [
+            (worker.finished, [self._on_finished, self._on_background_finished]),
+            (worker.failed, [self._on_failed, self._on_background_failed]),
+            (worker.cancelled, [self._on_cancelled, self._on_background_cancelled]),
+            (worker.coder_failed, [self._on_coder_failed, self._on_background_coder_failed]),
+            (worker.progress, [self._on_progress, self._on_background_progress]),
+            (worker.stage_result, [self._on_stage_result, self._on_background_stage_result]),
+        ]
+        for signal, handlers in signal_handlers:
+            for handler in handlers:
+                try:
+                    signal.disconnect(handler)
+                except Exception:
+                    pass
+
+    def _connect_worker_background(self, worker: AgentWorker | CoderRetryWorker) -> None:
+        self._disconnect_worker_signals(worker)
+        worker.finished.connect(self._on_background_finished)
+        worker.failed.connect(self._on_background_failed)
+        worker.cancelled.connect(self._on_background_cancelled)
+        worker.coder_failed.connect(self._on_background_coder_failed)
+        worker.progress.connect(self._on_background_progress)
+        worker.stage_result.connect(self._on_background_stage_result)
+
+    def _connect_worker_foreground(self, worker: AgentWorker | CoderRetryWorker) -> None:
+        self._disconnect_worker_signals(worker)
+        worker.finished.connect(self._on_finished)
+        worker.failed.connect(self._on_failed)
+        worker.cancelled.connect(self._on_cancelled)
+        worker.coder_failed.connect(self._on_coder_failed)
+        worker.progress.connect(self._on_progress)
+        worker.stage_result.connect(self._on_stage_result)
+        self._background_workers = [w for w in self._background_workers if w is not worker]
+        self._worker = worker
+        self._foreground_run_dir = self._worker_run_dir_value(worker)
+        self._set_busy(True)
+        self._refresh_task_console()
+
+    def _worker_run_dir_value(self, worker: AgentWorker | CoderRetryWorker) -> str:
+        if not hasattr(worker, "current_run_dir"):
+            return ""
+        try:
+            candidate = worker.current_run_dir()
+        except Exception:
+            return ""
+        return str(candidate) if candidate is not None else ""
+
+    def _find_background_worker_by_run_dir(self, run_dir: Path) -> AgentWorker | CoderRetryWorker | None:
+        target = run_dir.resolve()
+        for worker in self._background_workers:
+            value = self._worker_run_dir_value(worker)
+            if not value:
+                continue
+            try:
+                if Path(value).resolve() == target:
+                    return worker
+            except Exception:
+                continue
+        return None
+
+    def _background_worker_run_dir(self) -> Path | None:
+        sender = self.sender()
+        if sender is None or not hasattr(sender, "current_run_dir"):
+            return None
+        try:
+            candidate = sender.current_run_dir()
+            if candidate is None:
+                return None
+            return Path(candidate)
+        except Exception:
+            return None
+
+    def _cleanup_background_worker(self, sender_obj: QtCore.QObject | None) -> None:
+        if sender_obj is None:
+            return
+        self._background_workers = [w for w in self._background_workers if w is not sender_obj]
+
+    def _on_background_progress(self, message: str) -> None:
+        run_dir = self._background_worker_run_dir()
+        if run_dir is None:
+            return
+        self._write_run_meta(
+            run_dir,
+            {
+                "status": "running",
+                "last_progress": message,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        self._refresh_history_page()
+
+    def _on_background_stage_result(self, stage: str, _content: str) -> None:
+        run_dir = self._background_worker_run_dir()
+        if run_dir is None:
+            return
+        self._write_run_meta(
+            run_dir,
+            {
+                "status": "running",
+                "current_stage": stage,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+
+    def _on_background_finished(self, payload: dict) -> None:
+        run_dir_str = str(payload.get("run_dir", "") or "").strip()
+        if run_dir_str:
+            run_dir = Path(run_dir_str)
+            video_path = self._resolve_run_video_path(run_dir)
+            updates = {
+                "status": "success" if video_path else "finished_without_video",
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            if video_path is not None:
+                updates["video_path"] = str(video_path.resolve())
+            self._write_run_meta(run_dir, updates)
+        self._cleanup_background_worker(self.sender())
+        self._refresh_history_page()
+        self._dispatch_pending_workflows()
+
+    def _on_background_failed(self, message: str) -> None:
+        run_dir = self._background_worker_run_dir()
+        if run_dir is not None:
+            self._write_run_meta(
+                run_dir,
+                {
+                    "status": "failed",
+                    "last_error": message,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+        self._cleanup_background_worker(self.sender())
+        self._refresh_history_page()
+        self._dispatch_pending_workflows()
+
+    def _on_background_cancelled(self, payload: dict) -> None:
+        run_dir_str = str(payload.get("run_dir", "") or "").strip()
+        if run_dir_str:
+            self._write_run_meta(
+                Path(run_dir_str),
+                {
+                    "status": "cancelled",
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+        self._cleanup_background_worker(self.sender())
+        self._refresh_history_page()
+        self._dispatch_pending_workflows()
+
+    def _on_background_coder_failed(self, payload: dict) -> None:
+        run_dir_str = str(payload.get("run_dir", "") or "").strip()
+        if run_dir_str:
+            self._write_run_meta(
+                Path(run_dir_str),
+                {
+                    "status": "coder_failed",
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+        self._cleanup_background_worker(self.sender())
+        self._refresh_history_page()
+        self._dispatch_pending_workflows()
 
     def _request_stop(self) -> None:
         if self._worker is None or not self._worker.isRunning():
@@ -1271,6 +1661,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._worker.request_cancel()
             self.status_bar.showMessage("已请求停止，正在等待当前步骤结束...（再次点击可强制终止）")
             self.run_button.setText("强制终止")
+            self.run_button.setStyleSheet("")
             self.run_button.setProperty("warning", False)
             self.run_button.setProperty("danger", True)
             self.run_button.style().unpolish(self.run_button)
@@ -1284,8 +1675,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._show_continue_action(continue_payload, "已强制终止当前任务。")
         self.status_bar.showMessage("已强制终止")
         self._worker = None
+        self._foreground_run_dir = ""
         self._stop_requested = False
         self._set_busy(False)
+        self._dispatch_pending_workflows()
 
     def _on_finished(self, payload: dict) -> None:
         run_dir_str = payload.get("run_dir", "")
@@ -1332,11 +1725,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 },
             )
 
-        self.status_bar.showMessage("完成")
         self._worker = None
+        self._foreground_run_dir = ""
         self._stop_requested = False
-        self._set_busy(False, next_mode="new_project")
+        self._set_busy(False, next_mode="start")
         self._refresh_history_page()
+        self._dispatch_pending_workflows()
 
     def _on_failed(self, message: str) -> None:
         if self._active_stage and self._active_stage in self._stage_cards:
@@ -1346,10 +1740,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if message:
                 failed_card.set_content(message)
         self._push_message("运行失败", message, status="error")
-        self.status_bar.showMessage(message if message else "运行失败")
         self._worker = None
+        self._foreground_run_dir = ""
         self._stop_requested = False
-        self._set_busy(False, next_mode="new_project")
+        self._set_busy(False, next_mode="start")
+        self._dispatch_pending_workflows()
         if message != "运行已取消":
             QtWidgets.QMessageBox.critical(self, "运行失败", message)
 
@@ -1368,9 +1763,11 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         self.status_bar.showMessage("任务已终止，可继续运行")
         self._worker = None
+        self._foreground_run_dir = ""
         self._stop_requested = False
-        self._set_busy(False, next_mode="new_project")
+        self._set_busy(False, next_mode="start")
         self._refresh_history_page()
+        self._dispatch_pending_workflows()
 
     def _show_continue_action(self, payload: dict, message: str) -> None:
         run_dir_str = str(payload.get("run_dir", "") or "").strip()
@@ -1412,10 +1809,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._active_render_options = self._merge_render_options(payload)
         resume_stage = str(payload.get("resume_from_stage", "") or "").strip().lower()
         stop_stage = str(payload.get("stop_after_stage", "") or "").strip().lower()
-        if resume_stage:
-            self.status_bar.showMessage(f"正在继续运行（从 {resume_stage} 开始）...")
-        else:
-            self.status_bar.showMessage("正在继续运行...")
         self._worker = AgentWorker(
             image_path=None,
             render_options=self._active_render_options,
@@ -1423,18 +1816,14 @@ class MainWindow(QtWidgets.QMainWindow):
             resume_from_stage=resume_stage or None,
             stop_after_stage=stop_stage or None,
         )
-        self._worker.finished.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.cancelled.connect(self._on_cancelled)
-        self._worker.coder_failed.connect(self._on_coder_failed)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.stage_result.connect(self._on_stage_result)
+        self._connect_worker_foreground(self._worker)
         self._worker.start()
 
     def _on_coder_failed(self, payload: dict) -> None:
         """Handle coder failure without treating it as a full workflow crash."""
         card = self._stage_cards.get("coder") or self._ensure_stage_card("coder", "Coding Agent 代码")
         card.set_status("error")
+        card.set_content(self._build_coder_failure_detail(payload))
         self._enable_coder_rerun(payload)
         self._attach_stage_retry_icon("coder", card)
 
@@ -1455,9 +1844,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.status_bar.showMessage("Coder 执行失败，可点击重试")
         self._worker = None
+        self._foreground_run_dir = ""
         self._stop_requested = False
-        self._set_busy(False, next_mode="new_project")
+        self._set_busy(False, next_mode="start")
         self._refresh_history_page()
+        self._dispatch_pending_workflows()
 
     def _retry_coder(self, payload: dict) -> None:
         """Re-run only the coder step using preserved earlier outputs."""
@@ -1480,19 +1871,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._worker = CoderRetryWorker(
             director_plan=payload["director_plan"],
+            animator_plan=payload["animator_plan"],
             render_options=self._active_render_options,
             run_dir=payload["run_dir"],
         )
-        self._worker.finished.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.cancelled.connect(self._on_cancelled)
-        self._worker.coder_failed.connect(self._on_coder_failed)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.stage_result.connect(self._on_stage_result)
+        self._connect_worker_foreground(self._worker)
         self._worker.start()
 
     def _collect_render_options_from_ui(self) -> dict:
         voice_data = str(self.voice_combo.currentData() or "none")
+        solver_prompt_text = self.drop_zone.prompt_text().strip()
         prompt_text = ""
         if voice_data.startswith("clone:"):
             voice_filename = voice_data[len("clone:"):]
@@ -1504,6 +1892,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     prompt_text = txt_path.read_text(encoding="utf-8").strip()
         return {
             "voice": voice_data,
+            "solver_prompt_text": solver_prompt_text,
             "prompt_text": prompt_text,
             "bgm_path": str(self.music_combo.currentData() or ""),
             "tts_backend": os.environ.get("FILAGLYPH_TTS_BACKEND", "local").strip() or "local",
@@ -1520,6 +1909,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Keep prior successful choices when UI still sits at default "none"/empty.
         if merged.get("voice") in ("none", "") and str(base.get("voice", "")).strip() not in ("", "none"):
             merged["voice"] = base.get("voice")
+        if not str(merged.get("solver_prompt_text", "")).strip() and str(base.get("solver_prompt_text", "")).strip():
+            merged["solver_prompt_text"] = base.get("solver_prompt_text")
         if not str(merged.get("prompt_text", "")).strip() and str(base.get("prompt_text", "")).strip():
             merged["prompt_text"] = base.get("prompt_text")
         if not str(merged.get("bgm_path", "")).strip() and str(base.get("bgm_path", "")).strip():
@@ -1533,15 +1924,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
         run_dir = str(payload.get("run_dir", "") or "").strip()
         director_plan = str(payload.get("director", "") or payload.get("director_plan", "") or "").strip()
+        animator_plan = str(payload.get("animator", "") or payload.get("animator_plan", "") or "").strip()
         if not director_plan:
             director_card = self._stage_cards.get("director")
             director_plan = str(getattr(director_card, "_raw_markdown", "") or "").strip()
-        if not run_dir or not director_plan:
+        if not animator_plan:
+            animator_card = self._stage_cards.get("animator")
+            animator_plan = str(getattr(animator_card, "_raw_markdown", "") or "").strip()
+        if not run_dir or not director_plan or not animator_plan:
             return
 
         retry_payload = {
             "run_dir": run_dir,
             "director_plan": director_plan,
+            "animator_plan": animator_plan,
             "render_options": payload.get("render_options", {}),
         }
         card._retry_payload = retry_payload  # type: ignore[attr-defined]
@@ -1569,12 +1965,14 @@ class MainWindow(QtWidgets.QMainWindow):
         return run_dir, render_options
 
     def _attach_stage_retry_icon(self, stage: str, card: MessageCard) -> None:
-        if stage not in {"solver", "architect", "director", "coder"}:
+        if stage not in {"solver", "deepseek", "architect", "director", "animator", "coder"}:
             return
         tooltip_map = {
             "solver": "重新运行 Solver",
+            "deepseek": "重新运行 DeepSeek 数值化",
             "architect": "重新运行 Architect",
             "director": "重新运行 Director",
+            "animator": "重新运行 Animator",
             "coder": "重新运行 Coder",
         }
         card.add_header_icon_button(
@@ -1603,13 +2001,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 director_path = run_dir / "director_plan.md"
                 if director_path.exists():
                     director_plan = director_path.read_text(encoding="utf-8")
-            if not director_plan:
-                QtWidgets.QMessageBox.warning(self, "提示", "缺少 Director 规划，无法重试 Coder。")
+            animator_plan = str(getattr(self._stage_cards.get("animator"), "_raw_markdown", "") or "").strip()
+            if not animator_plan:
+                animator_path = run_dir / "animator_codegen.md"
+                if not animator_path.exists():
+                    animator_path = run_dir / "animator_plan.md"
+                if animator_path.exists():
+                    animator_plan = animator_path.read_text(encoding="utf-8")
+            if not director_plan or not animator_plan:
+                QtWidgets.QMessageBox.warning(self, "提示", "缺少 Director/Animator 规划，无法重试 Coder。")
                 return
             self._retry_coder(
                 {
                     "run_dir": str(run_dir),
                     "director_plan": director_plan,
+                    "animator_plan": animator_plan,
                     "render_options": render_options,
                 }
             )
@@ -1634,23 +2040,43 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_progress(self, message: str) -> None:
         stage_map = {
             "solver": "解题结果",
+            "deepseek": "物理量数值化",
             "architect": "Manim Architect 代码",
             "director": "动画规划书",
+            "animator": "动画执行规范",
             "coder": "Coding Agent 代码",
         }
         m = message.lower()
         for stage, title in stage_map.items():
             if stage in m:
                 self._active_stage = stage
-                self._ensure_stage_card(stage, title).set_status("running")
+                card = self._ensure_stage_card(stage, title)
+                card.set_status("running")
+                card.set_activity(self._progress_activity_text(message, stage))
                 break
-        self.status_bar.showMessage(message)
+        if self._active_stage and self._active_stage in self._stage_cards:
+            current_card = self._stage_cards[self._active_stage]
+            current_card.set_activity(self._progress_activity_text(message, self._active_stage))
+        run_dir_str, _render_options = self._resolve_run_context()
+        if run_dir_str:
+            self._foreground_run_dir = run_dir_str
+            self._write_run_meta(
+                Path(run_dir_str),
+                {
+                    "status": "running",
+                    "last_progress": message,
+                    "current_stage": self._active_stage or "",
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
 
     def _on_stage_result(self, stage: str, content: str) -> None:
         title_map = {
             "solver": "解题结果",
+            "deepseek": "物理量数值化",
             "architect": "Manim Architect 代码",
             "director": "动画规划书",
+            "animator": "动画执行规范",
             "coder": "Coding Agent 代码",
         }
         card = self._ensure_stage_card(stage, title_map.get(stage, stage))
@@ -1675,11 +2101,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 {
                     "run_dir": run_dir,
                     "director_plan": str(getattr(self._stage_cards.get("director"), "_raw_markdown", "") or "").strip(),
+                    "animator_plan": str(getattr(self._stage_cards.get("animator"), "_raw_markdown", "") or "").strip(),
                     "render_options": render_options,
                 }
             )
         if self._active_stage == stage:
             self._active_stage = None
+        run_dir_str, _render_options = self._resolve_run_context()
+        if run_dir_str:
+            self._write_run_meta(
+                Path(run_dir_str),
+                {
+                    "status": "running",
+                    "current_stage": stage,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
 
     def _set_run_button_mode(self, mode: str) -> None:
         self._run_button_mode = mode
@@ -1688,25 +2125,33 @@ class MainWindow(QtWidgets.QMainWindow):
             self.run_button.setText("终止运行")
             self.run_button.setProperty("warning", True)
             self.run_button.setProperty("danger", False)
+            self.run_button.setStyleSheet("color: #111827; background: #fbbc04; border: 1px solid #f59e0b;")
         elif mode == "new_project":
             self.run_button.setText("新建项目")
             self.run_button.setProperty("warning", False)
             self.run_button.setProperty("danger", False)
+            self.run_button.setStyleSheet("")
         else:
             self.run_button.setText("启动")
             self.run_button.setProperty("warning", False)
             self.run_button.setProperty("danger", False)
+            self.run_button.setStyleSheet("")
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.run_button.update()
 
     def _set_busy(self, busy: bool, *, next_mode: str = "start") -> None:
         if busy:
             self._set_run_button_mode("running")
         else:
             self._set_run_button_mode(next_mode)
+        self._refresh_task_console()
 
     def _start_new_project(self) -> None:
         self._worker = None
+        self._foreground_run_dir = ""
         self._stop_requested = False
         self._active_stage = None
         self._stage_cards = {}
@@ -1716,8 +2161,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._image_path = None
         self.file_info.setText("未选择题目图片")
         self.drop_zone.set_filename(None)
+        self.drop_zone.set_prompt_text("")
         self._clear_output_cards()
-        self.pages.setCurrentIndex(0)
+        self._switch_page(PAGE_WORKBENCH)
         self._set_run_button_mode("start")
         self.status_bar.showMessage("已新建项目，可开始新任务")
 
@@ -1853,8 +2299,18 @@ class MainWindow(QtWidgets.QMainWindow):
             }}
             #themeBtn[active=\"true\"] {{ color: #ffffff; }}
 
-            #dropZone {{ background: {colors['dark_three']}; border: 2px dashed {colors['context_color']}; border-radius: 12px; min-height: 180px; }}
+            #dropZone {{ background: {colors['dark_three']}; border: 1px solid {colors['bg_three']}; border-radius: 12px; min-height: 220px; }}
             #dropZone QLabel {{ color: {colors['text_foreground']}; font-size: 13px; }}
+            #dropZoneHint {{ color: {colors['text_description']}; font-size: 12px; }}
+            #dropZoneFileName {{ color: {colors['text_title']}; font-weight: 600; }}
+            #workbenchPromptInput {{
+                color: {colors['text_foreground']};
+                background: {colors['bg_one']};
+                border: 1px solid {colors['bg_three']};
+                border-radius: 10px;
+                padding: 8px;
+            }}
+            #workbenchPromptInput:focus {{ border: 1px solid {colors['context_color']}; }}
 
             #runButton, #saveButton {{
                 color: #ffffff;
@@ -1865,13 +2321,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 font-weight: 600;
             }}
             #runButton:hover, #saveButton:hover {{ background: {colors['context_hover']}; }}
-            #runButton[warning="true"] {{
+            #runButton[warning="true"], #runButton[warning=true] {{
                 color: #111827;
                 background: #fbbc04;
                 border: 1px solid #f59e0b;
             }}
-            #runButton[warning="true"]:hover {{ background: #f59e0b; }}
-            #runButton[danger="true"] {{ background: {colors['red']}; border: 1px solid {colors['red']}; color: #ffffff; }}
+            #runButton[warning="true"]:hover, #runButton[warning=true]:hover {{ background: #f59e0b; }}
+            #runButton[danger="true"], #runButton[danger=true] {{ background: {colors['red']}; border: 1px solid {colors['red']}; color: #ffffff; }}
             #secondaryButton {{
                 color: {colors['text_title']};
                 background: {colors['bg_one']};
@@ -1881,6 +2337,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 font-weight: 600;
             }}
             #secondaryButton:hover {{ background: {colors['bg_two']}; }}
+            #backButton {{
+                color: {colors['text_title']};
+                background: {colors['bg_one']};
+                border: 1px solid {colors['bg_three']};
+                border-radius: 10px;
+                padding: 0px;
+                font-size: 18px;
+                font-weight: 700;
+                text-align: center;
+            }}
+            #backButton:hover {{ background: {colors['bg_two']}; }}
 
             QMenu {{
                 background: {colors['bg_one']};
@@ -1895,6 +2362,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
             #messageCard {{ background: {colors['dark_three']}; border: 1px solid {colors['bg_two']}; border-radius: 12px; }}
             #agentIcon {{ background: {colors['bg_three']}; color: {colors['icon_active']}; border-radius: 12px; font-size: 11px; font-weight: 700; }}
+            #messageActivity {{ color: {colors['text_description']}; font-size: 11px; font-weight: 600; }}
             #messageTitle {{ color: {colors['text_title']}; font-weight: 650; font-size: 13px; }}
             #messageStatusRunning {{ color: {colors['context_hover']}; font-size: 12px; font-weight: 600; }}
             #messageStatusDone {{ color: {colors['green']}; font-size: 12px; font-weight: 600; }}
@@ -1918,6 +2386,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 background: {colors['bg_one']};
                 border: 1px solid {colors['bg_two']};
                 border-radius: 16px;
+            }}
+            #homeRunCard {{
+                background: {colors['bg_one']};
+                border: 1px solid {colors['bg_two']};
+                border-radius: 18px;
+            }}
+            #homeRunCard:hover {{
+                border: 1px solid {colors['context_color']};
+                background: {colors['dark_three']};
             }}
             #historyTitle {{ color: {colors['text_title']}; font-size: 14px; font-weight: 650; }}
             #historyMeta {{ color: {colors['text_description']}; font-size: 12px; }}

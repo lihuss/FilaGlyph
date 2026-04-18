@@ -1,14 +1,82 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import sys
+import time
+from contextlib import contextmanager
 
 from pathlib import Path
 
-from .config import PROJECT_ROOT
+from .config import AGENT_RUNS_DIR, PROJECT_ROOT
+from .logging import log_status
 from .media import merge_audio_segments_with_ffmpeg, probe_media_duration
 from .subprocess import run_subprocess_with_failfast, truncate_output
+
+
+def _try_lock_file(handle) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock_file(handle) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def acquire_tts_slot(runtime_log_file: Path | None, poll_interval_s: float = 1.0):
+    """Acquire the global TTS slot; waits when another workflow is synthesizing.
+
+    This creates a process-wide queueing effect: one active TTS synthesis at a time.
+    """
+    AGENT_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = AGENT_RUNS_DIR / "tts_global.lock"
+    lock_path.touch(exist_ok=True)
+
+    with lock_path.open("r+b") as handle:
+        if lock_path.stat().st_size == 0:
+            handle.write(b"0")
+            handle.flush()
+            handle.seek(0)
+
+        announced_wait = False
+        while True:
+            if _try_lock_file(handle):
+                log_status("TTS slot acquired.", runtime_log_file)
+                break
+            if not announced_wait:
+                log_status("TTS is busy. Waiting in queue for the synthesis slot...", runtime_log_file)
+                announced_wait = True
+            time.sleep(max(0.2, poll_interval_s))
+
+        try:
+            yield
+        finally:
+            _unlock_file(handle)
+            log_status("TTS slot released.", runtime_log_file)
 
 
 def run_narration_child_script(

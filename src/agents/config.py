@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 
-ROLE_NAMES = ("solver", "architect", "director", "coder")
+ROLE_NAMES = ("solver", "quantizer", "architect", "director", "animator", "coder")
 
 
 @dataclass

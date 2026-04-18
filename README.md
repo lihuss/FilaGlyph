@@ -28,6 +28,12 @@ pip install -r requirements.txt
       "model": "gemini-3.1-pro-preview",
       "base_url": ""
     },
+    "quantizer": {
+      "provider": "",
+      "api_key": "qwe",
+      "model": "deepseek-reasoner",
+      "base_url": "https://api.deepseek.com/v1"
+    },
     "architect": {
       "provider": "",
       "api_key": "def",
@@ -64,7 +70,9 @@ pip install -r requirements.txt
 venv\Scripts\python.exe app_agent_desktop.py
 ```
 
-在应用侧边栏点击 `设置`，填写四个角色的 API Key（`solver` / `architect` / `director` / `coder`）。前三个需要有识图能力的模型，如Gemini。
+在应用侧边栏点击 `设置`，填写角色的 API Key（`solver` / `quantizer` / `architect` / `director` / `animator` / `coder`）。
+
+建议：`quantizer` 使用 DeepSeek（如 `deepseek-reasoner`），负责结构化/数值化物理量；`solver` 负责题意理解与推导。
 
 在应用侧边栏点击 `音频`，在音色素材栏添加你的音频，可以选择音频文件或直接录制你的声音。建议输入对应的语音原文，这能大幅提高复刻准确度。
 

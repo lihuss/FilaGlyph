@@ -50,7 +50,7 @@ def _find_rendered_mp4(media_dir: Path, file_stem: str) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
-def _build_render_env() -> dict:
+def _build_render_env(run_dir: Path | None = None) -> dict:
     env = os.environ.copy()
     try:
         import imageio_ffmpeg  # type: ignore
@@ -62,6 +62,13 @@ def _build_render_env() -> dict:
             env["PATH"] = ffmpeg_dir + os.pathsep + path_value
     except Exception:
         pass
+
+    if run_dir is not None:
+        run_dir_str = str(run_dir.resolve())
+        existing = env.get("PYTHONPATH", "")
+        parts = [p for p in existing.split(os.pathsep) if p]
+        if run_dir_str not in parts:
+            env["PYTHONPATH"] = os.pathsep.join([run_dir_str, *parts]) if parts else run_dir_str
     return env
 
 
@@ -91,7 +98,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--scene-file", type=str, required=True)
     parser.add_argument("--scene-name", type=str, required=True)
     parser.add_argument("--scene-index", type=int, required=True)
-    parser.add_argument("--run-dir", type=str, default="outputs/runs/manual")
+    parser.add_argument("--run-dir", type=str, required=True)
     parser.add_argument("--quality", type=str, choices=["l", "m", "h", "p", "k"], default="h")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--resolution", type=str, default="1920,1080")
@@ -146,7 +153,7 @@ def main() -> None:
         completed = subprocess.run(
             [sys.executable, *command],
             cwd=PROJECT_ROOT,
-            env=_build_render_env(),
+            env=_build_render_env(run_dir=run_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -185,7 +192,15 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(traceback.format_exc())
+        trace_text = traceback.format_exc()
+        try:
+            sys.stderr.write(trace_text)
+        except UnicodeEncodeError:
+            try:
+                sys.stderr.buffer.write(trace_text.encode("utf-8", errors="replace"))
+                sys.stderr.buffer.write(b"\n")
+            except Exception:
+                pass
         if not _runtime_log_requested(sys.argv[1:]):
             log_path = log_runtime_error("src/make_manim_scene.py", exc)
             print(f"Error details written to: {log_path}")

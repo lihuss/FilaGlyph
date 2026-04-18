@@ -91,7 +91,7 @@ def build_parser() -> ArgumentParser:
     parser = ArgumentParser(description="Generate one full narration audio file using CosyVoice.")
     parser.add_argument("--tts-script-file", type=str, required=True)
     parser.add_argument("--output-audio", type=str, required=True)
-    parser.add_argument("--run-dir", type=str, default="outputs/runs/manual")
+    parser.add_argument("--run-dir", type=str, required=True)
 
     parser.add_argument("--tts-lang", type=str, default="zh-cn")
     parser.add_argument(

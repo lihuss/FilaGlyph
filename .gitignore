@@ -19,3 +19,4 @@ materials/voices/*.flac
 materials/voices/*.ogg
 materials/voices/*.opus
 agents_credentials.json
+.cache/
